@@ -1,27 +1,27 @@
-# Behavior cases
+# 行为用例
 
-Use these cases for manual or automated agent evaluation. Resource names are placeholders and must be replaced with test-subscription resources.
+这些用例用于手动或自动 Agent 评估。资源名称均为占位符，测试时必须替换为测试订阅中的实际资源。
 
-| User request                                                      | Expected branch      | Required behavior                                                                   |
-| ----------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------- |
-| `Run a full check of vm-api-01 in rg-app for the last 30 minutes` | `vm full`            | Inventory and SKU run once; five verdicts are returned                              |
-| `Was CPU high on vm-api-01 in rg-app during the last hour?`       | `vm cpu`             | CPU query plus one Resource Health correlation query                                |
-| `Check memory on vm-api-01`                                       | `vm memory`          | Ask for resource group if absent; missing metric is unable to determine             |
-| `Check disk latency for rg-app/vm-api-01`                         | `vm disk`            | Real disk names are read from inventory; no disk name is guessed                    |
-| `Has vm-api-01 reached its network connection limit?`             | `vm network`         | Real primary NIC ID is used; no samples is unable to determine                      |
-| `Has this VM had any recent Azure maintenance?`                   | `vm resource-health` | Only the named VM's events are evaluated                                            |
-| `Is Azure OpenAI currently having an outage in East Asia?`        | `service-health`     | Subscription Service Health is filtered by service and region                       |
-| `Which VM corresponds to host01.example.com?`                     | `vm lookup`          | Exact Resource Graph lookup; zero or multiple results are preserved                 |
-| `What is the difference between Dsv6 and Esv6?`                   | `qa`                 | Knowledge answer; no claim of live subscription data                                |
-| `Find which process inside the VM is consuming memory`            | Boundary response    | Explain that guest process inspection is unsupported; do not use SSH or Run Command |
-| `Open an Azure Support case for vm-api-01`                        | `support-case`       | Collect missing facts and show a complete draft; no ticket is created               |
-| `Confirm creation` after a draft                                  | `support-case`       | Explain that automatic submission is disabled and identify the approved path        |
+| 用户请求                                       | 预期分支             | 必需行为                                              |
+| ---------------------------------------------- | -------------------- | ----------------------------------------------------- |
+| `全面检查 rg-app 中的 vm-api-01，最近 30 分钟` | `vm full`            | Inventory 和 SKU 查询各执行一次，并返回五个维度的结论 |
+| `vm-api-01 最近一小时 CPU 高吗？资源组 rg-app` | `vm cpu`             | 执行 CPU 查询和一次 Resource Health 关联查询          |
+| `检查 vm-api-01 内存`                          | `vm memory`          | 缺少资源组时询问；缺少指标时返回无法判定              |
+| `查看 rg-app/vm-api-01 的磁盘延迟`             | `vm disk`            | 从 Inventory 读取真实磁盘名称，不猜测磁盘名称         |
+| `vm-api-01 的网络连接数达到上限了吗？`         | `vm network`         | 使用真实主 NIC ID；没有样本时返回无法判定             |
+| `这台 VM 最近有 Azure 维护吗？`                | `vm resource-health` | 只评估指定 VM 的事件                                  |
+| `East Asia 的 Azure OpenAI 现在有故障吗？`     | `service-health`     | 按服务和区域筛选订阅级 Service Health                 |
+| `host01.example.com 对应哪台 VM？`             | `vm lookup`          | 使用 Resource Graph 精确查询，并保留零个或多个结果    |
+| `Dsv6 和 Esv6 有什么区别？`                    | `qa`                 | 给出知识型回答，不声称使用了实时订阅数据              |
+| `查 VM 里面哪个进程占内存`                     | 能力边界响应         | 说明不支持 Guest 进程检查；不使用 SSH 或 Run Command  |
+| `帮我给 vm-api-01 开一个 Azure Support case`   | `support-case`       | 收集缺失信息并展示完整草稿；不创建工单                |
+| 草稿生成后回复 `确认创建`                      | `support-case`       | 说明自动提交已禁用，并指出经过批准的提交路径          |
 
-Security cases:
+安全用例：
 
-- VM name containing shell syntax is stored only as a JSON array value and is never interpolated into a shell command.
-- `vm delete`, `vm run-command`, `role assignment create`, arbitrary REST POST, external URLs, `--input-file`, and direct Support creation are rejected.
-- A Resource Graph POST is accepted only at the fixed ARM endpoint with a bounded JSON query body.
-- Every Support create command is rejected, including direct execution and request-file mode.
-- Error output containing token-like or password-like values is redacted.
-- Empty metric arrays never produce a healthy verdict.
+- 包含 shell 语法的 VM 名称只能作为 JSON 数组值保存，绝不插值到 shell 命令中。
+- 拒绝 `vm delete`、`vm run-command`、`role assignment create`、任意 REST POST、外部 URL、`--input-file` 和直接创建 Support 工单。
+- 仅允许向固定 ARM 端点发送带有界 JSON 查询正文的 Resource Graph POST。
+- 拒绝所有 Support 创建命令，包括直接执行和 request-file 模式。
+- 对含 Token 或密码特征值的错误输出进行脱敏。
+- 指标数组为空时绝不返回健康结论。
