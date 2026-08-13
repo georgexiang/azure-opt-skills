@@ -1,25 +1,25 @@
-# VM diagnostics
+# VM 诊断
 
-Use this reference for `vm full`, `vm cpu`, `vm memory`, `vm disk`, and `vm network`.
+本参考用于 `vm full`、`vm cpu`、`vm memory`、`vm disk` 和 `vm network`。
 
-## Inputs
+## 输入要求
 
-- Require the exact VM resource name and resource group. Reuse values already stated in the current conversation; otherwise ask for them.
-- Use the current Azure CLI subscription unless the user explicitly identifies another accessible subscription.
-- Default the time window to the previous 30 minutes. Accept an explicit absolute range or lookback.
-- Convert API timestamps to the user's timezone. For Chinese conversations without another timezone, use Asia/Shanghai.
+- 必须提供精确的 VM 资源名称和资源组。优先复用当前会话中已明确给出的值；若缺失则向用户询问。
+- 默认使用当前 Azure CLI 订阅，除非用户明确指定了另一个可访问订阅。
+- 默认时间窗口为过去 30 分钟。支持用户显式提供绝对时间范围或回溯时长。
+- 将 API 时间戳转换为用户时区。中文会话在未指定其他时区时使用 Asia/Shanghai。
 
-Never invent a default resource group. Preserve the full VM name, including trailing numeric components.
+不要臆造默认资源组。必须保留完整 VM 名称，包括尾部数字组成部分。
 
-## Guard invocation
+## Guard 调用
 
-Static commands with no user-controlled values may use direct arguments:
+不含用户可控值的静态命令可直接传参：
 
 ```bash
 python3 skills/azure-ops/scripts/az_guard.py -- account show --query '{subscription:id,tenant:tenantId,user:user.name}' -o json
 ```
 
-For commands containing resource names, IDs, filters, times, or other user-controlled values, write a JSON request with the file primitive and pass only its path through the shell:
+对于包含资源名、ID、筛选条件、时间或其他用户可控值的命令，必须使用文件原语写入 JSON 请求，并在 shell 中仅传递文件路径：
 
 ```json
 {
@@ -41,77 +41,77 @@ For commands containing resource names, IDs, filters, times, or other user-contr
 python3 skills/azure-ops/scripts/az_guard.py --request-file .azure-ops/request.json
 ```
 
-Reuse the request file only after replacing the entire JSON document. Never build it with shell interpolation.
+仅可在完整替换整个 JSON 文档后复用该请求文件。禁止使用 shell 插值拼接构造。
 
-## Shared inventory
+## 共享清单
 
-Run this once for every VM diagnostic:
+每次 VM 诊断都先执行一次：
 
 ```text
 vm show -d -g <rg> -n <vm> --query {id:id,name:name,location:location,vmSize:hardwareProfile.vmSize,osType:storageProfile.osDisk.osType,powerState:powerState,osDisk:storageProfile.osDisk.{name:name,sku:managedDisk.storageAccountType},dataDisks:storageProfile.dataDisks[].{lun:lun,name:name,sku:managedDisk.storageAccountType},nics:networkProfile.networkInterfaces[].{id:id,primary:primary}} -o json
 ```
 
-Then get the guest-reported computer name:
+然后获取来宾系统上报的计算机名：
 
 ```text
 vm get-instance-view -g <rg> -n <vm> --query instanceView.computerName -o json
 ```
 
-If the VM is absent, stop and report that the exact name and resource group did not resolve. If the power state is not running, continue only where control-plane data remains meaningful and warn that metrics may be absent.
+若 VM 不存在，立即停止并说明该精确名称与资源组未解析到资源。若电源状态不是 running，仅在控制平面数据仍有意义时继续，并提示指标可能缺失。
 
-Extract the subscription ID from the returned resource ID. Query the VM SKU once:
+从返回的资源 ID 中提取订阅 ID。然后查询一次 VM SKU：
 
 ```text
 rest --method get --url https://management.azure.com/subscriptions/<subscription>/providers/Microsoft.Compute/skus?api-version=2021-07-01&$filter=location%20eq%20'<location>' --query value[?name=='<vmSize>']|[0].{vCPUs:capabilities[?name=='vCPUs'].value|[0],MemoryGB:capabilities[?name=='MemoryGB'].value|[0]} -o json
 ```
 
-If a SKU capability is unavailable, show it as `N/A`; never infer it from the SKU name.
+若 SKU 能力字段不可用，显示为 `N/A`；禁止根据 SKU 名称推断。
 
 ## CPU
 
-Query `Percentage CPU` with one-minute granularity for windows up to two hours. For longer windows use a supported coarser interval. Request `Average` and `Maximum` and reduce the response with JMESPath:
+在不超过两小时的窗口内，以一分钟粒度查询 `Percentage CPU`。更长窗口需使用受支持的更粗粒度 interval。请求 `Average` 和 `Maximum`，并通过 JMESPath 在服务端做归约：
 
 ```text
 monitor metrics list --resource <vm> --resource-group <rg> --resource-type Microsoft.Compute/virtualMachines --metric Percentage CPU --start-time <utc-start> --end-time <utc-end> --interval PT1M --aggregation Average Maximum --query {average:avg(value[0].timeseries[0].data[?average!=null].average),peak:max(value[0].timeseries[0].data[?maximum!=null].maximum),high:length(value[0].timeseries[0].data[?maximum>=`90`]),samples:length(value[0].timeseries[0].data[?maximum!=null])} -o json
 ```
 
-Verdict:
+判定规则：
 
-- Abnormal when CPU is at least 90% for 20% or more of valid samples.
-- Healthy when valid samples exist and the high-sample share is below 20%.
-- Unable to determine when no valid samples exist.
+- 当 CPU 大于等于 90% 的样本占有效样本的 20% 及以上时，判定为异常。
+- 当存在有效样本且高占比样本低于 20% 时，判定为健康。
+- 当不存在有效样本时，判定为无法判断。
 
-An isolated peak is evidence to inspect, not by itself a sustained CPU incident.
+单次孤立峰值仅是需要排查的线索，不能单独认定为持续 CPU 事件。
 
-## Memory
+## 内存
 
-Azure exposes guest memory only when the required monitoring agent and collection are configured. Query `Available Memory Percentage`:
+只有在已配置所需监控代理和采集规则时，Azure 才会暴露来宾内存指标。查询 `Available Memory Percentage`：
 
 ```text
 monitor metrics list --resource <vm> --resource-group <rg> --resource-type Microsoft.Compute/virtualMachines --metric Available Memory Percentage --start-time <utc-start> --end-time <utc-end> --interval PT1M --aggregation Average Minimum --query {averageAvailable:avg(value[0].timeseries[0].data[?average!=null].average),minimumAvailable:min(value[0].timeseries[0].data[?minimum!=null].minimum),high:length(value[0].timeseries[0].data[?minimum<=`10`]),samples:length(value[0].timeseries[0].data[?minimum!=null])} -o json
 ```
 
-Calculate:
+计算方式：
 
-- Average used percentage = $100 - averageAvailable$.
-- Peak used percentage = $100 - minimumAvailable$.
-- High share = samples with used percentage at least 90% divided by valid samples.
+- 平均已用百分比 = $100 - averageAvailable$。
+- 峰值已用百分比 = $100 - minimumAvailable$。
+- 高占比 = 已用百分比大于等于 90% 的样本数 ÷ 有效样本数。
 
-Verdict:
+判定规则：
 
-- Abnormal when the high share is at least 20%.
-- Healthy when valid samples exist and the high share is below 20%.
-- Unable to determine when the metric is absent. Recommend checking Azure Monitor Agent and data-collection configuration; do not claim the VM has free memory.
+- 当高占比大于等于 20% 时，判定为异常。
+- 当存在有效样本且高占比低于 20% 时，判定为健康。
+- 当该指标缺失时，判定为无法判断。应建议检查 Azure Monitor Agent 与数据采集配置；不得声称 VM 内存充足。
 
-## Disk
+## 磁盘
 
-Use the shared inventory's OS disk and data disk names. Query each disk's current properties:
+使用共享清单中的 OS 盘和数据盘名称。查询每块盘的当前属性：
 
 ```text
 disk show -g <rg> -n <disk> --query {sku:sku.name,sizeGB:diskSizeGB,tier:tier,iops:diskIOPSReadWrite,mbps:diskMBpsReadWrite} -o json
 ```
 
-Use the following metric groups:
+使用以下指标组：
 
 ```text
 OS Disk IOPS Consumed Percentage
@@ -124,61 +124,61 @@ VM Uncached IOPS Consumed Percentage
 VM Uncached Bandwidth Consumed Percentage
 ```
 
-Query OS disk and VM metrics on the VM resource. Query all data-disk LUN series in one request with `--filter "LUN eq '*'"`. Use `Maximum` and server-side JMESPath reduction so the guard does not receive an entire long time series.
+在 VM 资源上查询 OS 盘与 VM 指标。对所有数据盘 LUN 序列使用 `--filter "LUN eq '*'"` 一次性查询。使用 `Maximum` 以及服务端 JMESPath 归约，避免向 guard 返回整段长时间序列。
 
-Choose the interval by window:
+按时间窗口选择 interval：
 
-| Window                          | Interval |
-| ------------------------------- | -------- |
-| Up to 2 hours                   | `PT1M`   |
-| More than 2 and up to 12 hours  | `PT5M`   |
-| More than 12 and up to 48 hours | `PT15M`  |
-| More than 48 hours              | `PT1H`   |
+| 窗口                         | Interval |
+| ---------------------------- | -------- |
+| 不超过 2 小时                | `PT1M`   |
+| 超过 2 小时且不超过 12 小时  | `PT5M`   |
+| 超过 12 小时且不超过 48 小时 | `PT15M`  |
+| 超过 48 小时                 | `PT1H`   |
 
-Verdict is abnormal if any valid value meets one of these conditions:
+任一有效值满足以下任一条件时，判定为异常：
 
-- Disk or VM uncached IOPS consumed percentage is at least 95%.
-- Disk or VM uncached bandwidth consumed percentage is at least 95%.
-- Any disk latency peak is greater than 200 ms.
+- Disk 或 VM uncached IOPS consumed percentage 大于等于 95%。
+- Disk 或 VM uncached bandwidth consumed percentage 大于等于 95%。
+- 任一磁盘 latency 峰值大于 200 ms。
 
-If a disk series is missing, mark that disk or dimension unable to determine. Report Azure-returned custom IOPS and throughput limits when present. Do not derive a limit from a stale embedded SKU table; link to the current Azure managed disk documentation instead.
+若某磁盘序列缺失，将该磁盘或维度标记为无法判断。若 Azure 返回了自定义 IOPS 与吞吐上限，需如实报告。不要基于过时的内嵌 SKU 表推导上限；应改为链接到最新 Azure managed disk 文档。
 
-## Network
+## 网络
 
-Select the primary NIC from the returned NIC IDs. Prefer `primary=true`; otherwise use the first returned NIC. Never construct a NIC name from the VM name.
+从返回的 NIC ID 中选择主 NIC。优先 `primary=true`；否则使用返回列表中的第一个 NIC。禁止根据 VM 名称拼接 NIC 名称。
 
-Read NIC acceleration properties:
+读取 NIC 加速属性：
 
 ```text
 network nic show --ids <primary-nic-id> --query {accelerated:enableAcceleratedNetworking,auxMode:auxiliaryMode,auxSku:auxiliarySku} -o json
 ```
 
-Query VM network totals:
+查询 VM 网络总量：
 
 ```text
 monitor metrics list --resource <vm> --resource-group <rg> --resource-type Microsoft.Compute/virtualMachines --metric Network In Total Network Out Total --start-time <utc-start> --end-time <utc-end> --interval PT1M --aggregation Maximum --query value[].{metric:name.value,peak:max_by(timeseries[0].data[?maximum!=null],&maximum)} -o json
 ```
 
-For connection-flow peaks:
+对于连接流量峰值：
 
-- Without Accelerated Connections, query VM metrics `Inbound Flows` and `Outbound Flows`.
-- With `auxiliaryMode=AcceleratedConnections` and `auxiliarySku` in `A1`, `A2`, `A4`, or `A8`, query the full NIC resource ID for `CurrentTotalFlowsIn` and `CurrentTotalFlowsOut`. Do not also pass `--resource-type` with a full resource ID.
+- 未启用 Accelerated Connections 时，查询 VM 指标 `Inbound Flows` 和 `Outbound Flows`。
+- 当 `auxiliaryMode=AcceleratedConnections` 且 `auxiliarySku` 属于 `A1`、`A2`、`A4`、`A8` 时，使用完整 NIC 资源 ID 查询 `CurrentTotalFlowsIn` 和 `CurrentTotalFlowsOut`。传入完整资源 ID 时不得再附带 `--resource-type`。
 
-No flow samples means unable to determine, not healthy. Compare a valid peak with the current documented limit for the VM or Accelerated Connections SKU. If the limit cannot be verified, report the peak and acceleration configuration without inventing a capacity verdict. Bandwidth is supporting evidence and does not independently prove saturation because Azure Monitor does not expose every SKU's hard network ceiling in this query.
+没有流量样本应判定为无法判断，而非健康。将有效峰值与当前文档中 VM 或 Accelerated Connections SKU 的限制进行比对。若限制无法核验，只报告峰值与加速配置，不要臆造容量结论。带宽仅作辅助证据，不能独立证明饱和，因为 Azure Monitor 在该查询中不会暴露所有 SKU 的硬网络上限。
 
-## Resource Health correlation
+## Resource Health 关联
 
-For CPU, memory, disk, and network incidents, query Resource Health once using `references/health-and-lookup.md`. Only events inside the diagnostic window participate in correlation. A platform event can support a platform-correlation statement; it does not by itself prove the metric anomaly's root cause.
+对 CPU、内存、磁盘、网络事件，按 `references/health-and-lookup.md` 查询一次 Resource Health。仅诊断窗口内事件参与关联。平台事件可支持“与平台相关”的表述，但不能单独证明指标异常的根因。
 
-## Full diagnosis
+## 完整诊断
 
-For `vm full`:
+针对 `vm full`：
 
-1. Run shared inventory, computer-name lookup, and SKU lookup once.
-2. Run one reduced query per metric group.
-3. Run NIC configuration only after the inventory returns the real NIC ID.
-4. Run disk property requests once per actual disk.
-5. Run Resource Health once.
-6. Produce one verdict for CPU, memory, disk, network, and Resource Health.
+1. 执行一次共享清单、计算机名查询与 SKU 查询。
+2. 每个指标组执行一次归约查询。
+3. 仅在清单返回真实 NIC ID 后执行 NIC 配置查询。
+4. 每块实际磁盘各执行一次属性查询。
+5. 执行一次 Resource Health 查询。
+6. 分别给出 CPU、内存、磁盘、网络和 Resource Health 的判定。
 
-Keep `N/A` dimensions visible in the summary so a partial result is never presented as a clean bill of health.
+在汇总中保留 `N/A` 维度，避免把部分结果误呈现为“完全健康”。

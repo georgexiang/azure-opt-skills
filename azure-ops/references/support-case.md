@@ -1,25 +1,25 @@
-# Azure Support case
+# Azure Support 工单
 
-Use this workflow when the user asks to draft, open, create, or submit an Azure technical support case.
+当用户提出要起草、开启、创建或提交 Azure 技术支持工单时，使用本流程。
 
-This QM Skill prepares a complete case but does not submit it. A general-purpose Local Sandbox cannot enforce a trustworthy cross-turn write confirmation or keep a Support write identity inaccessible to arbitrary processes. The user must review and submit the draft through Azure Portal or an operator-managed workflow outside this Sandbox.
+该 QM Skill 会准备完整工单，但不会提交。通用 Local Sandbox 无法可靠地强制跨轮次写入确认，也无法保证 Support 写入身份对任意进程不可访问。用户必须在本 Sandbox 之外，通过 Azure Portal 或由运维方管理的流程审核并提交草稿。
 
-## Collect user-provided facts
+## 收集用户提供事实
 
-Require:
+必须收集：
 
-- A concise problem description and observed symptoms.
-- The affected resource name or complete resource ID.
-- Incident start and end time, or an explicit statement that it is ongoing.
-- A contact email.
-- Requested severity, defaulting to B/Moderate when omitted.
-- A phone number with country code for A/Critical.
+- 简明的问题描述与已观察到的症状。
+- 受影响资源名称或完整资源 ID。
+- 事件开始与结束时间，或明确说明“仍在进行中”。
+- 联系邮箱。
+- 请求严重级别；若省略则默认 B/Moderate。
+- 若为 A/Critical，需提供带国家区号的电话号码。
 
-The resource group may come from the conversation or a complete resource ID. Do not invent diagnostic findings, contact details, impact, or timestamps. Technical resource ID is optional when it cannot be resolved cheaply.
+资源组可来自会话内容或完整资源 ID。不得臆造诊断结论、联系方式、影响范围或时间戳。若技术资源 ID 无法低成本解析，可作为可选项。
 
-## Resolve classification with reads
+## 通过只读查询解析分类
 
-Do not guess Service or Problem Classification IDs. Query them through the guard:
+不要猜测 Service 或 Problem Classification ID。必须通过 guard 查询：
 
 ```text
 support services list --query [?contains(displayName,'<service keyword>')].{name:name,displayName:displayName} -o json
@@ -29,40 +29,40 @@ support services list --query [?contains(displayName,'<service keyword>')].{name
 support services problem-classifications list --service-name <service-name> -o json
 ```
 
-Show the selected display name and full classification ID in the draft so the user can review them.
+在草稿中展示所选显示名称和完整分类 ID，供用户复核。
 
-## Severity and contact
+## 严重级别与联系方式
 
-Capture the user's requested severity, business impact, preferred language, contact method, support hours, email, and phone when applicable. The available severity values and contact combinations depend on the current Azure support plan, region, and service. Do not present a hardcoded matrix as authoritative and do not silently downgrade the user's request. Mark the selection for verification in Azure Portal or the approved submission workflow.
+记录用户请求的严重级别、业务影响、首选语言、联系方法、支持时段、邮箱以及适用时的电话。可用的严重级别与联系方式组合取决于当前 Azure 支持计划、区域和服务。不要把硬编码矩阵当作权威依据，也不要静默下调用户请求。应将所选项标记为需在 Azure Portal 或批准的提交流程中核验。
 
-## Draft
+## 草稿
 
-Build a title and description using only confirmed facts:
+仅使用已确认事实构建标题与描述：
 
 ```text
-Title: [service or impact] <resource> <symptom>, assistance requested
+标题: [服务或影响] <resource> <symptom>，请求协助
 
-== Problem ==
-- Affected resource: <resource ID or name and resource group>
-- Incident time: <UTC range or ongoing>
-- Business impact: <user-provided impact or N/A>
+== 问题 ==
+- 受影响资源: <resource ID or name and resource group>
+- 事件时间: <UTC range or ongoing>
+- 业务影响: <user-provided impact or N/A>
 
-== Observations ==
+== 现象与观察 ==
 <user-provided symptoms and verified diagnostic facts>
 
-== Assistance requested ==
+== 所需协助 ==
 <specific request to Microsoft Support>
 ```
 
-Provide the following submission details after the human-readable draft:
+在人类可读草稿后补充以下提交详情：
 
 ```text
-Subscription: <subscription name; ID only when needed by the submitter>
-Service: <verified service display name>
-Problem Classification: <verified display name and full ARM ID>
-Severity: <selected severity>
-Contact: <method, language, email, and phone when required>
-Technical resource: <verified resource ID when available>
+订阅: <subscription name; ID only when needed by the submitter>
+服务: <verified service display name>
+问题分类: <verified display name and full ARM ID>
+严重级别: <selected severity>
+联系方式: <method, language, email, and phone when required>
+技术资源: <verified resource ID when available>
 ```
 
-Never construct or execute `support in-subscription tickets create`. When the user asks to proceed, state that automatic Support submission is intentionally disabled in this QM Skill and direct them to Azure Portal's Help + support flow or the organization's approved ticket automation. Preserve the draft in the current Scope when requested so an authorized operator can use it.
+不要构造或执行 `support in-subscription tickets create`。当用户要求继续时，需明确说明该 QM Skill 有意禁用自动 Support 提交，并引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 以便授权运维人员使用。
