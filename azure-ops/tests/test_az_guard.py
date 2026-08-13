@@ -238,6 +238,12 @@ class GuardValidationTests(unittest.TestCase):
         self.assertNotIn('"secret"', redacted)
         self.assertNotIn("abc.def.ghi", redacted)
 
+    def test_denies_oversized_direct_command(self) -> None:
+        self.assert_guard_error(
+            "COMMAND_TOO_LARGE",
+            lambda: az_guard.validate_read(["vm", "show", "-n", "x" * 50_001]),
+        )
+
 
 class RequestFileTests(unittest.TestCase):
     def test_reads_workspace_request(self) -> None:
@@ -270,26 +276,121 @@ class RequestFileTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.TestCase):
+    def version_probe(self, command, **kwargs):
+        if command[1:3] == ["version", "--query"]:
+            return subprocess.CompletedProcess(command, 0, stdout=f"{az_guard.AZURE_CLI_VERSION}\n", stderr="")
+        if command[1:4] == ["extension", "show", "--name"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=f"{az_guard.AZURE_SUPPORT_EXTENSION_VERSION}\n",
+                stderr="",
+            )
+        raise AssertionError(command)
+
+    def installed_cli(self, root: Path) -> tuple[Path, Path]:
+        install_root = root / ".local" / "share" / "azure-cli" / az_guard.AZURE_CLI_VERSION
+        executable = install_root / "bin" / "az"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\n", encoding="utf-8")
+        executable.chmod(0o755)
+        (install_root / ".complete").write_text(f"{az_guard.AZURE_CLI_VERSION}\n", encoding="utf-8")
+        (root / ".local" / "share" / "azure-cli" / "extensions").mkdir(parents=True)
+        link = root / ".local" / "bin" / "az"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(f"../share/azure-cli/{az_guard.AZURE_CLI_VERSION}/bin/az")
+        return install_root, link
+
+    def test_uses_scope_local_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            install_root, link = self.installed_cli(Path(temporary))
+            extension_dir = install_root.parent / "extensions"
+            with patch.object(az_guard, "USER_AZURE_INSTALL_ROOT", install_root), patch.object(
+                az_guard, "USER_AZURE_CLI", link
+            ), patch.object(
+                az_guard, "USER_AZURE_EXTENSION_DIR", extension_dir
+            ), patch.object(az_guard.subprocess, "run", side_effect=self.version_probe):
+                self.assertEqual(az_guard.azure_cli_path(), str(install_root / "bin" / "az"))
+
+    def test_does_not_fall_back_to_path_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(az_guard, "USER_AZURE_CLI", Path(temporary) / "missing"):
+                self.assertIsNone(az_guard.azure_cli_path())
+
+    def test_rejects_unpinned_scope_local_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            install_root, link = self.installed_cli(Path(temporary))
+            (install_root / ".complete").write_text("different\n", encoding="utf-8")
+            with patch.object(az_guard, "USER_AZURE_INSTALL_ROOT", install_root), patch.object(
+                az_guard, "USER_AZURE_CLI", link
+            ):
+                self.assertIsNone(az_guard.azure_cli_path())
+
+    def test_rejects_symlinked_versioned_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            install_root, link = self.installed_cli(root)
+            executable = install_root / "bin" / "az"
+            target = root / "other-az"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            target.chmod(0o755)
+            executable.unlink()
+            executable.symlink_to(target)
+            extension_dir = install_root.parent / "extensions"
+            with patch.object(az_guard, "USER_AZURE_INSTALL_ROOT", install_root), patch.object(
+                az_guard, "USER_AZURE_CLI", link
+            ), patch.object(az_guard, "USER_AZURE_EXTENSION_DIR", extension_dir):
+                self.assertIsNone(az_guard.azure_cli_path())
+
+    def test_rejects_wrong_reported_cli_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            install_root, link = self.installed_cli(Path(temporary))
+
+            def wrong_version(command, **kwargs):
+                return subprocess.CompletedProcess(command, 0, stdout="wrong\n", stderr="")
+
+            with patch.object(az_guard, "USER_AZURE_INSTALL_ROOT", install_root), patch.object(
+                az_guard, "USER_AZURE_CLI", link
+            ), patch.object(az_guard.subprocess, "run", side_effect=wrong_version):
+                self.assertIsNone(az_guard.azure_cli_path())
+
+    def test_rejects_symlinked_extension_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+            root = Path(temporary)
+            install_root, link = self.installed_cli(root)
+            extension_dir = root / ".local" / "share" / "azure-cli" / "extensions"
+            extension_dir.rmdir()
+            extension_dir.symlink_to(outside, target_is_directory=True)
+            with patch.object(az_guard, "USER_AZURE_INSTALL_ROOT", install_root), patch.object(
+                az_guard, "USER_AZURE_CLI", link
+            ), patch.object(az_guard, "USER_AZURE_EXTENSION_DIR", extension_dir):
+                self.assertIsNone(az_guard.azure_cli_path())
+
     def test_executes_argv_without_shell(self) -> None:
         def complete(command, **kwargs):
             kwargs["stdout"].write(b'{"ok":true}\n')
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(az_guard.shutil, "which", return_value="/usr/bin/az"), patch.object(
+        with patch.object(az_guard, "azure_cli_path", return_value="/root/.local/bin/az"), patch.object(
             az_guard.subprocess, "run", side_effect=complete
         ) as run:
             result = az_guard.execute(["account", "show"])
         self.assertEqual(result, {"ok": True})
         command = run.call_args.args[0]
-        self.assertEqual(command[:3], ["/usr/bin/az", "account", "show"])
+        self.assertEqual(command[:3], ["/root/.local/bin/az", "account", "show"])
         self.assertFalse(run.call_args.kwargs["shell"])
+        self.assertIs(run.call_args.kwargs["preexec_fn"], az_guard.limit_process_files)
+        self.assertEqual(run.call_args.kwargs["env"]["AZURE_CONFIG_DIR"], str(Path.home() / ".azure"))
+        self.assertEqual(run.call_args.kwargs["env"]["AZURE_EXTENSION_DIR"], str(az_guard.USER_AZURE_EXTENSION_DIR))
+        self.assertNotIn("AGENT_API_TOKEN", run.call_args.kwargs["env"])
+        self.assertNotIn("AGENT_CREDENTIAL_TOKEN", run.call_args.kwargs["env"])
 
     def test_rejects_large_output_before_reading_json(self) -> None:
         def complete(command, **kwargs):
             kwargs["stdout"].write(b"x" * (az_guard.MAX_OUTPUT_CHARS + 1))
             return subprocess.CompletedProcess(command, 0)
 
-        with patch.object(az_guard.shutil, "which", return_value="/usr/bin/az"), patch.object(
+        with patch.object(az_guard, "azure_cli_path", return_value="/root/.local/bin/az"), patch.object(
             az_guard.subprocess, "run", side_effect=complete
         ):
             with self.assertRaises(az_guard.GuardError) as raised:

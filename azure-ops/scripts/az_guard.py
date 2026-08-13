@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import re
-import shutil
+import resource
 import subprocess
 import sys
 import tempfile
@@ -15,9 +15,15 @@ from urllib.parse import parse_qs, urlsplit
 
 MAX_REQUEST_BYTES = 65_536
 MAX_OUTPUT_CHARS = 150_000
+MAX_PROCESS_FILE_BYTES = MAX_OUTPUT_CHARS + 1
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 120
 RESOURCE_GRAPH_PATH = "/providers/Microsoft.ResourceGraph/resources"
+AZURE_CLI_VERSION = "2.89.1"
+AZURE_SUPPORT_EXTENSION_VERSION = "2.0.1"
+USER_AZURE_INSTALL_ROOT = Path.home() / ".local" / "share" / "azure-cli" / AZURE_CLI_VERSION
+USER_AZURE_CLI = Path.home() / ".local" / "bin" / "az"
+USER_AZURE_EXTENSION_DIR = Path.home() / ".local" / "share" / "azure-cli" / "extensions"
 
 READ_COMMANDS = {
     ("account", "show"),
@@ -81,7 +87,13 @@ class GuardError(Exception):
 
 
 def emit(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > MAX_OUTPUT_CHARS:
+        encoded = json.dumps(
+            {"error": "OUTPUT_TOO_LARGE", "message": "Guard output exceeded the response limit"},
+            separators=(",", ":"),
+        )
+    print(encoded)
 
 
 def redact(value: str) -> str:
@@ -134,6 +146,8 @@ def validate_common_args(args: list[str]) -> None:
         raise GuardError("EMPTY_COMMAND", "Azure CLI argument list is empty")
     if any(value.startswith("@") for value in args):
         raise GuardError("FILE_REFERENCE_DENIED", "Azure CLI @file arguments are not allowed")
+    if len(args) > 200 or sum(len(value) for value in args) > 50_000:
+        raise GuardError("COMMAND_TOO_LARGE", "Azure CLI argument list exceeds the guard limit")
     for value in args:
         lowered = value.lower()
         if lowered in DENIED_FLAGS or any(lowered.startswith(f"{flag}=") for flag in DENIED_FLAGS):
@@ -260,6 +274,59 @@ def classify_cli_error(stderr: str) -> str:
     return "AZURE_ERROR"
 
 
+def azure_cli_path() -> str | None:
+    expected = USER_AZURE_INSTALL_ROOT / "bin" / "az"
+    marker = USER_AZURE_INSTALL_ROOT / ".complete"
+    try:
+        for directory in (USER_AZURE_INSTALL_ROOT, expected.parent, USER_AZURE_EXTENSION_DIR):
+            if not directory.is_dir() or directory.is_symlink() or directory.stat().st_uid != os.getuid():
+                return None
+        if expected.is_symlink() or marker.is_symlink():
+            return None
+        if not USER_AZURE_CLI.is_symlink():
+            return None
+        if os.readlink(USER_AZURE_CLI) != f"../share/azure-cli/{AZURE_CLI_VERSION}/bin/az":
+            return None
+        if USER_AZURE_CLI.resolve(strict=True) != expected.resolve(strict=True):
+            return None
+        if marker.read_text(encoding="utf-8").strip() != AZURE_CLI_VERSION:
+            return None
+        if not expected.is_file() or not os.access(expected, os.X_OK):
+            return None
+        with tempfile.TemporaryDirectory() as config_dir:
+            check_env = {
+                "HOME": str(Path.home()),
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "LANG": "C.UTF-8",
+                "AZURE_CORE_COLLECT_TELEMETRY": "0",
+                "AZURE_CONFIG_DIR": config_dir,
+                "AZURE_EXTENSION_DIR": str(USER_AZURE_EXTENSION_DIR),
+            }
+            cli = subprocess.run(
+                [str(expected), "version", "--query", '"azure-cli"', "-o", "tsv"],
+                capture_output=True,
+                check=False,
+                env=check_env,
+                text=True,
+                timeout=15,
+            )
+            support = subprocess.run(
+                [str(expected), "extension", "show", "--name", "support", "--query", "version", "-o", "tsv"],
+                capture_output=True,
+                check=False,
+                env=check_env,
+                text=True,
+                timeout=15,
+            )
+            if cli.returncode != 0 or cli.stdout.strip() != AZURE_CLI_VERSION:
+                return None
+            if support.returncode != 0 or support.stdout.strip() != AZURE_SUPPORT_EXTENSION_VERSION:
+                return None
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return None
+    return str(expected)
+
+
 def read_process_file(handle, limit: int, code: str, message: str) -> str:
     handle.seek(0, os.SEEK_END)
     size = handle.tell()
@@ -269,13 +336,26 @@ def read_process_file(handle, limit: int, code: str, message: str) -> str:
     return handle.read().decode("utf-8", errors="replace")
 
 
+def limit_process_files() -> None:
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_PROCESS_FILE_BYTES, MAX_PROCESS_FILE_BYTES))
+
+
 def execute(args: list[str]) -> Any:
-    az_path = shutil.which("az")
+    az_path = azure_cli_path()
     if not az_path:
-        raise GuardError("AZ_NOT_FOUND", "Azure CLI is not installed in this Sandbox")
+        raise GuardError(
+            "AZ_NOT_FOUND",
+            "Azure CLI is not installed in this Scope; run skills/azure-ops/scripts/install_azure_cli.sh",
+        )
     command = [az_path, *normalize_output_args(args), "--only-show-errors"]
-    environment = dict(os.environ)
-    environment["AZURE_CORE_COLLECT_TELEMETRY"] = "0"
+    environment = {
+        "HOME": str(Path.home()),
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "AZURE_CORE_COLLECT_TELEMETRY": "0",
+        "AZURE_CONFIG_DIR": str(Path.home() / ".azure"),
+        "AZURE_EXTENSION_DIR": str(USER_AZURE_EXTENSION_DIR),
+    }
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         try:
             result = subprocess.run(
@@ -285,6 +365,7 @@ def execute(args: list[str]) -> Any:
                 shell=False,
                 stdout=stdout_file,
                 stderr=stderr_file,
+                preexec_fn=limit_process_files,
                 timeout=timeout_seconds(),
             )
         except subprocess.TimeoutExpired as error:

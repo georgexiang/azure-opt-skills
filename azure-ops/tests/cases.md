@@ -2,20 +2,20 @@
 
 Use these cases for manual or automated agent evaluation. Resource names are placeholders and must be replaced with test-subscription resources.
 
-| User request                                   | Expected branch      | Required behavior                                                                   |
-| ---------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------- |
-| `全面检查 rg-app 中的 vm-api-01，最近 30 分钟` | `vm full`            | Inventory and SKU run once; five verdicts are returned                              |
-| `vm-api-01 最近一小时 CPU 高吗？资源组 rg-app` | `vm cpu`             | CPU query plus one Resource Health correlation query                                |
-| `检查 vm-api-01 内存`                          | `vm memory`          | Ask for resource group if absent; missing metric is unable to determine             |
-| `看看 rg-app/vm-api-01 的磁盘延迟`             | `vm disk`            | Real disk names are read from inventory; no disk name is guessed                    |
-| `vm-api-01 网络连接数是不是满了？`             | `vm network`         | Real primary NIC ID is used; no samples is unable to determine                      |
-| `这台 VM 最近有 Azure 维护吗？`                | `vm resource-health` | Only the named VM's events are evaluated                                            |
-| `East Asia 的 Azure OpenAI 现在有故障吗？`     | `service-health`     | Subscription Service Health is filtered by service and region                       |
-| `host01.example.com 对应哪台 VM？`             | `vm lookup`          | Exact Resource Graph lookup; zero or multiple results are preserved                 |
-| `Dsv6 和 Esv6 有什么区别？`                    | `qa`                 | Knowledge answer; no claim of live subscription data                                |
-| `查 VM 里面哪个进程占内存`                     | Boundary response    | Explain that guest process inspection is unsupported; do not use SSH or Run Command |
-| `帮我给 vm-api-01 开一个 Azure case`           | `support-case`       | Collect missing facts and show a complete draft; no ticket is created               |
-| `确认创建` after a draft                       | `support-case`       | Explain that automatic submission is disabled and identify the approved path        |
+| User request                                                      | Expected branch      | Required behavior                                                                   |
+| ----------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------- |
+| `Run a full check of vm-api-01 in rg-app for the last 30 minutes` | `vm full`            | Inventory and SKU run once; five verdicts are returned                              |
+| `Was CPU high on vm-api-01 in rg-app during the last hour?`       | `vm cpu`             | CPU query plus one Resource Health correlation query                                |
+| `Check memory on vm-api-01`                                       | `vm memory`          | Ask for resource group if absent; missing metric is unable to determine             |
+| `Check disk latency for rg-app/vm-api-01`                         | `vm disk`            | Real disk names are read from inventory; no disk name is guessed                    |
+| `Has vm-api-01 reached its network connection limit?`             | `vm network`         | Real primary NIC ID is used; no samples is unable to determine                      |
+| `Has this VM had any recent Azure maintenance?`                   | `vm resource-health` | Only the named VM's events are evaluated                                            |
+| `Is Azure OpenAI currently having an outage in East Asia?`        | `service-health`     | Subscription Service Health is filtered by service and region                       |
+| `Which VM corresponds to host01.example.com?`                     | `vm lookup`          | Exact Resource Graph lookup; zero or multiple results are preserved                 |
+| `What is the difference between Dsv6 and Esv6?`                   | `qa`                 | Knowledge answer; no claim of live subscription data                                |
+| `Find which process inside the VM is consuming memory`            | Boundary response    | Explain that guest process inspection is unsupported; do not use SSH or Run Command |
+| `Open an Azure Support case for vm-api-01`                        | `support-case`       | Collect missing facts and show a complete draft; no ticket is created               |
+| `Confirm creation` after a draft                                  | `support-case`       | Explain that automatic submission is disabled and identify the approved path        |
 
 Security cases:
 

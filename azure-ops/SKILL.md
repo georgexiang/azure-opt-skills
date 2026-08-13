@@ -7,6 +7,9 @@ description: >-
 requiredCapabilities:
   - egress:login.microsoftonline.com
   - egress:management.azure.com
+  - egress:pypi.org
+  - egress:files.pythonhosted.org
+  - egress:azcliprod.blob.core.windows.net
 ---
 
 # Azure Ops
@@ -34,21 +37,19 @@ Do not treat a service-wide outage question as a VM Resource Health request. Do 
 For every live Azure operation:
 
 1. Read the branch reference completely.
-2. Resolve missing values from the current conversation. Ask for a subscription, resource group, VM name, or time range only when the selected branch cannot proceed safely without it.
-3. Never guess a resource group, resource ID, NIC name, disk name, SKU limit, subscription, or Support problem-classification ID.
-4. Run every Azure CLI command through the bundled guard. Never invoke `az` directly:
+2. Verify the pinned Scope-local Azure CLI before collecting inputs by running `bash skills/azure-ops/scripts/install_azure_cli.sh --check`. If the check fails, run `bash skills/azure-ops/scripts/install_azure_cli.sh` with the `background` tool. Poll or watch it until it exits successfully, run `--check` again, then continue the same request. The installer writes only to the current Scope's fixed persistent `$HOME/.local` paths; never use `sudo`, `apt`, environment path overrides, or modify the Sandbox image.
 
-   ```bash
-   python3 skills/azure-ops/scripts/az_guard.py -- account show --query '{subscription:id,tenant:tenantId,user:user.name}' -o json
-   ```
+3. Resolve missing values from the current conversation. Ask for a subscription, resource group, VM name, or time range only when the selected branch cannot proceed safely without it.
+4. Never guess a resource group, resource ID, NIC name, disk name, SKU limit, subscription, or Support problem-classification ID.
+5. Run every Azure CLI command through the bundled guard. Never invoke `az` directly. For example: `python3 skills/azure-ops/scripts/az_guard.py -- account show --query '{subscription:id,tenant:tenantId,user:user.name}' -o json`.
 
-5. Pass each argument as one shell-quoted argument. Never interpolate user text into shell syntax, command substitutions, redirects, pipes, environment assignments, or option names.
-6. Reuse shared VM inventory and SKU results during `vm full`; do not repeat those queries for each metric.
-7. Treat `null`, an empty series, permission errors, and unavailable metrics as missing data. Missing data is `N/A` or unable to determine, never healthy.
-8. Present resource times in the user's stated timezone. If none is stated and the conversation is Chinese, use Asia/Shanghai and label it. Send UTC timestamps to Azure APIs.
-9. Do not print commands, raw JSON, access tokens, credential fields, or full authentication errors in the final report.
+6. Pass each argument as one shell-quoted argument. Never interpolate user text into shell syntax, command substitutions, redirects, pipes, environment assignments, or option names.
+7. Reuse shared VM inventory and SKU results during `vm full`; do not repeat those queries for each metric.
+8. Treat `null`, an empty series, permission errors, and unavailable metrics as missing data. Missing data is `N/A` or unable to determine, never healthy.
+9. Present resource times in the user's stated timezone. If none is stated and the conversation is Chinese, use Asia/Shanghai and label it. Send UTC timestamps to Azure APIs.
+10. Do not print commands, raw JSON, access tokens, credential fields, or full authentication errors in the final report.
 
-The guard expects Azure CLI to be installed and already authenticated in the current QM Scope. If it returns `AZ_NOT_FOUND` or `AUTH_REQUIRED`, stop live queries and explain that the operator must configure the Sandbox image or the Scope's non-interactive Azure identity. Do not ask the user to paste a secret into chat.
+The guard expects Azure CLI to be authenticated in the current QM Scope. If it returns `AZ_NOT_FOUND`, run the bundled installer once and retry. If it returns `AUTH_REQUIRED`, stop live queries and explain that an operator must provision a read-only Azure identity for this Scope. Do not ask the user to paste a secret into chat.
 
 ## Safety boundary
 
