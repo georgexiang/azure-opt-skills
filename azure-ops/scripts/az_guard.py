@@ -340,6 +340,72 @@ def limit_process_files() -> None:
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_PROCESS_FILE_BYTES, MAX_PROCESS_FILE_BYTES))
 
 
+def azure_environment() -> dict[str, str]:
+    return {
+        "HOME": str(Path.home()),
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "AZURE_CORE_COLLECT_TELEMETRY": "0",
+        "AZURE_CONFIG_DIR": str(Path.home() / ".azure"),
+        "AZURE_EXTENSION_DIR": str(USER_AZURE_EXTENSION_DIR),
+    }
+
+
+def env_delivered_auth() -> tuple[str, str, str] | None:
+    tenant_id = os.environ.get("AZURE_OPS_TENANT_ID", "").strip()
+    client_id = os.environ.get("AZURE_OPS_CLIENT_ID", "").strip()
+    certificate = os.environ.get("AZURE_OPS_CLIENT_CERTIFICATE_PEM", "").strip()
+    if not any((tenant_id, client_id, certificate)):
+        return None
+    if not UUID_PATTERN.fullmatch(tenant_id) or not UUID_PATTERN.fullmatch(client_id):
+        raise GuardError("AUTH_CONFIG_INVALID", "Azure Ops tenant and client IDs must be UUIDs")
+    if "-----BEGIN PRIVATE KEY-----" not in certificate or "-----BEGIN CERTIFICATE-----" not in certificate:
+        raise GuardError("AUTH_CONFIG_INVALID", "Azure Ops client certificate PEM is incomplete")
+    return tenant_id, client_id, certificate
+
+
+def authenticate_env_delivered(az_path: str, environment: dict[str, str]) -> None:
+    auth = env_delivered_auth()
+    if auth is None:
+        return
+    tenant_id, client_id, certificate = auth
+    with tempfile.TemporaryDirectory() as directory:
+        certificate_path = Path(directory) / "client.pem"
+        certificate_path.write_text(f"{certificate}\n", encoding="utf-8")
+        certificate_path.chmod(0o600)
+        try:
+            result = subprocess.run(
+                [
+                    az_path,
+                    "login",
+                    "--service-principal",
+                    "--username",
+                    client_id,
+                    "--tenant",
+                    tenant_id,
+                    "--password",
+                    str(certificate_path),
+                    "--allow-no-subscriptions",
+                    "--output",
+                    "none",
+                    "--only-show-errors",
+                ],
+                capture_output=True,
+                check=False,
+                env=environment,
+                shell=False,
+                text=True,
+                timeout=timeout_seconds(),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GuardError("AUTH_REQUIRED", "Azure Ops service-principal login timed out") from error
+        except OSError as error:
+            raise GuardError("AUTH_REQUIRED", f"Azure Ops service-principal login could not start: {error}") from error
+        if result.returncode != 0:
+            detail = redact((result.stderr or result.stdout or "Azure Ops service-principal login failed").strip())[-2_000:]
+            raise GuardError("AUTH_REQUIRED", detail)
+
+
 def execute(args: list[str]) -> Any:
     az_path = azure_cli_path()
     if not az_path:
@@ -348,14 +414,8 @@ def execute(args: list[str]) -> Any:
             "Azure CLI is not installed in this Scope; run skills/azure-ops/scripts/install_azure_cli.sh",
         )
     command = [az_path, *normalize_output_args(args), "--only-show-errors"]
-    environment = {
-        "HOME": str(Path.home()),
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-        "AZURE_CORE_COLLECT_TELEMETRY": "0",
-        "AZURE_CONFIG_DIR": str(Path.home() / ".azure"),
-        "AZURE_EXTENSION_DIR": str(USER_AZURE_EXTENSION_DIR),
-    }
+    environment = azure_environment()
+    authenticate_env_delivered(az_path, environment)
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         try:
             result = subprocess.run(

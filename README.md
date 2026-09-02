@@ -170,6 +170,8 @@ QM Local Sandbox 会将整个 `$HOME` 存储到 Scope 专属卷中，因此安�
 
 Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命令别名绕过。生产环境优先使用 service principal 或 managed identity。仅在 Conditional Access 允许时，才可用 Device Code 进行临时交互式登录。
 
+对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员可以通过 **Admin → Shared service credentials → Env delivery** 配置 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID` 和 `AZURE_OPS_CLIENT_CERTIFICATE_PEM`。Guard 只接受完整的三项组合，并使用临时 `0600` PEM完成固定的 certificate login；它不会开放任意 `az login`，也不会把 PEM转发给读取命令。此模式必须配合 tenant root management group 或目标 subscriptions 上的 Reader RBAC，不能授予写角色。
+
 建议将权限拆分为两个身份：
 
 | 身份         | 用途                                                              | 权限原则                                   |

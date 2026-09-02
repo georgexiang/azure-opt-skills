@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -384,6 +385,43 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["AZURE_EXTENSION_DIR"], str(az_guard.USER_AZURE_EXTENSION_DIR))
         self.assertNotIn("AGENT_API_TOKEN", run.call_args.kwargs["env"])
         self.assertNotIn("AGENT_CREDENTIAL_TOKEN", run.call_args.kwargs["env"])
+
+    def test_env_delivered_certificate_authenticates_before_read(self) -> None:
+        certificate = "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----\n-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n"
+        commands = []
+
+        def complete(command, **kwargs):
+            commands.append(command)
+            if command[1:3] == ["login", "--service-principal"]:
+                certificate_path = Path(command[command.index("--password") + 1])
+                self.assertEqual(certificate_path.read_text(encoding="utf-8"), certificate)
+                self.assertEqual(certificate_path.stat().st_mode & 0o777, 0o600)
+            else:
+                kwargs["stdout"].write(b'{"ok":true}\n')
+            return subprocess.CompletedProcess(command, 0)
+
+        delivered = {
+            "AZURE_OPS_TENANT_ID": "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3",
+            "AZURE_OPS_CLIENT_ID": "11111111-1111-4111-8111-111111111111",
+            "AZURE_OPS_CLIENT_CERTIFICATE_PEM": certificate,
+        }
+        with patch.dict(os.environ, delivered, clear=False), patch.object(
+            az_guard, "azure_cli_path", return_value="/root/.local/bin/az"
+        ), patch.object(az_guard.subprocess, "run", side_effect=complete) as run:
+            result = az_guard.execute(["account", "show"])
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(commands[0][1:3], ["login", "--service-principal"])
+        self.assertEqual(commands[1][1:3], ["account", "show"])
+        self.assertNotIn(certificate, " ".join(value for command in commands for value in command))
+        self.assertNotIn("AZURE_OPS_CLIENT_CERTIFICATE_PEM", run.call_args.kwargs["env"])
+
+    def test_incomplete_env_delivered_auth_is_rejected(self) -> None:
+        with patch.dict(os.environ, {"AZURE_OPS_TENANT_ID": "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3"}, clear=True), patch.object(
+            az_guard, "azure_cli_path", return_value="/root/.local/bin/az"
+        ):
+            with self.assertRaises(az_guard.GuardError) as raised:
+                az_guard.execute(["account", "show"])
+        self.assertEqual(raised.exception.code, "AUTH_CONFIG_INVALID")
 
     def test_rejects_large_output_before_reading_json(self) -> None:
         def complete(command, **kwargs):

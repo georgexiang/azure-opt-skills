@@ -49,6 +49,14 @@ requiredCapabilities:
 
 Guard 要求 Azure CLI 已在当前 QM Scope 中完成身份验证。如果返回 `AZ_NOT_FOUND`，运行一次随附安装器并重试。如果返回 `AUTH_REQUIRED`，停止实时查询，并说明运营方必须为该 Scope 配置只读 Azure 身份。不要要求用户把 Secret 粘贴到聊天中。
 
+可信的 QM 组织部署可以由管理员通过 **Admin → Shared service credentials → Env delivery** 配置专用只读 service principal：
+
+- `AZURE_OPS_TENANT_ID`：目标 tenant UUID；
+- `AZURE_OPS_CLIENT_ID`：应用 client UUID；
+- `AZURE_OPS_CLIENT_CERTIFICATE_PEM`：同时包含私钥与证书的 PEM。
+
+三项必须同时存在。Guard 会验证 UUID 与 PEM 结构，将 PEM 写入临时 `0600` 文件，执行固定的 service-principal certificate login，再执行原只读白名单命令；PEM 不会进入查询子进程环境、输出或持久文件。Agent 仍禁止直接执行 `az login`。Env delivery 是 org-wide 的，只有明确接受所有 Scope 共享该身份的可信环境才可使用，并且 Azure RBAC 必须限制为 Reader。
+
 ## 安全边界
 
 - 允许读取 Azure 控制平面、Azure Monitor、Resource Health、Service Health 和 Resource Graph。
