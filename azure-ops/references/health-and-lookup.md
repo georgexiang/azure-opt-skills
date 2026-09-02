@@ -51,6 +51,21 @@ rest --method get --url https://management.azure.com/subscriptions/<subscription
 
 报告中应包含受影响服务、区域、开始与缓解时间、状态、可用时的 tracking ID，以及最近一次更新。对于活动事件，建议持续关注 Azure Service Health。
 
+## Activity Log 对照
+
+当需要区分平台 Host Reboot、维护事件与用户或自动化触发的 Compute 操作时，查询同一 VM、同一时间窗口的 Activity Log：
+
+```text
+monitor activity-log list --resource-id <vm-resource-id> --start-time <utc-start> --end-time <utc-end> --query [].{time:eventTimestamp,operation:operationName.localizedValue,status:status.localizedValue,caller:caller,correlationId:correlationId,description:description} -o json
+```
+
+参数含资源 ID 与时间，必须使用 JSON 请求文件通过 guard 执行。只展示与 restart、redeploy、deallocate、start、maintenance 或 VM 写操作相关的记录；caller 只在归因所必需时展示，并避免暴露不必要的个人信息。
+
+- 成功的 Activity Log 写操作是操作者或自动化动作证据，不应归因为平台 Host Reboot。
+- Activity Log 无记录不证明平台发生故障；平台维护可能不产生对应 Activity Log 操作。
+- Resource Health 和 Service Health 仍是平台事件的主要证据。三类来源按时间关联，但不能仅凭时间相关性断言根因。
+- Host Reboot 与 Planned Maintenance 的组合判定和处置边界按 `vm-performance-patterns.md` 执行。
+
 ## VM 名称到计算机名
 
 当输入为 VM 资源名时，需提供或解析资源组，然后调用：

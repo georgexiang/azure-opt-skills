@@ -24,13 +24,14 @@ requiredCapabilities:
 | ----------------------------------------------------------------- | ---------------------------------------------- | --------------------------------- |
 | VM 整体诊断或健康检查                                             | `vm full`                                      | `references/vm-diagnostics.md`    |
 | VM CPU、内存、磁盘或网络                                          | `vm cpu`、`vm memory`、`vm disk`、`vm network` | `references/vm-diagnostics.md`    |
+| VM burst、限流、VF、Host Reboot 或 Planned Maintenance 模式分析   | 对应 VM 分支                                   | `references/vm-performance-patterns.md` |
 | 指定 VM 的可用性、维护或平台事件                                  | `vm resource-health`                           | `references/health-and-lookup.md` |
 | 订阅、服务或区域级 Azure 故障                                     | `service-health`                               | `references/health-and-lookup.md` |
 | 主机名、计算机名、VM 名称或资源 ID 查询                           | `vm lookup`                                    | `references/health-and-lookup.md` |
 | Azure 概念、产品、SKU、配额、价格、区域、对比或用户粘贴的错误解释 | `qa`                                           | 仅阅读本文件                      |
 | 生成 Azure Support 工单草稿或准备提交                             | `support-case`                                 | `references/support-case.md`      |
 
-不要把服务范围的故障问题当作 VM Resource Health 请求。不要把主机名查询当作诊断。Guest 进程、文件系统、应用日志或非 VM 实时诊断请求超出实时诊断边界；应说明限制，并建议相关的 Azure 原生诊断入口。
+选择模式分析时，还要先阅读该模式依赖的基础 reference，并复用其中的查询结果。不要把服务范围的故障问题当作 VM Resource Health 请求。不要把主机名查询当作诊断。Guest 进程、文件系统、应用日志或非 VM 实时诊断请求超出实时诊断边界；应说明限制，并建议相关的 Azure 原生诊断入口。
 
 ## 实时操作契约
 

@@ -32,8 +32,27 @@ class GuardValidationTests(unittest.TestCase):
     def test_allows_expected_read_command(self) -> None:
         az_guard.validate_read(["vm", "show", "-g", "rg", "-n", "vm", "-o", "json"])
 
+    def test_allows_activity_log_read(self) -> None:
+        az_guard.validate_read(
+            ["monitor", "activity-log", "list", "--resource-id", "/subscriptions/example", "-o", "json"]
+        )
+
+    def test_denies_activity_log_mutation(self) -> None:
+        self.assert_guard_error(
+            "COMMAND_DENIED",
+            lambda: az_guard.validate_read(["monitor", "activity-log", "create"]),
+        )
+
     def test_denies_destructive_command(self) -> None:
         self.assert_guard_error("COMMAND_DENIED", lambda: az_guard.validate_read(["vm", "delete", "-g", "rg", "-n", "vm"]))
+
+    def test_denies_vm_remediation_commands(self) -> None:
+        for operation in ("restart", "redeploy", "perform-maintenance"):
+            with self.subTest(operation=operation):
+                self.assert_guard_error(
+                    "COMMAND_DENIED",
+                    lambda operation=operation: az_guard.validate_read(["vm", operation, "-g", "rg", "-n", "vm"]),
+                )
 
     def test_denies_direct_support_creation(self) -> None:
         self.assert_guard_error("COMMAND_DENIED", lambda: az_guard.validate_read(support_args()))

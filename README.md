@@ -102,6 +102,7 @@ azure-opt-skills/
     SKILL.md
     references/
       vm-diagnostics.md
+      vm-performance-patterns.md
       health-and-lookup.md
       support-case.md
     scripts/
@@ -133,6 +134,7 @@ Web UI 的直接创建表单仅支持 `name`、`description`、`body` 与 `scope
 
 - `azure-ops/SKILL.md`：统一发现描述、十个意图分支、共享安全边界与报告契约。
 - `azure-ops/references/vm-diagnostics.md`：共享 VM 查询与 CPU、内存、磁盘、网络诊断。
+- `azure-ops/references/vm-performance-patterns.md`：CPU/disk burst、VM 级限流、VF、Host Reboot 与计划维护的证据组合和处置边界。
 - `azure-ops/references/health-and-lookup.md`：Resource Health、Service Health 与主机名查找工作流。
 - `azure-ops/references/support-case.md`：Support 分类查询、工单草稿与外部提交流程指引。
 - `azure-ops/scripts/install_azure_cli.sh`：在当前 Scope 的持久化 `$HOME` 中安装固定版本 Azure CLI。
@@ -268,6 +270,8 @@ Azure Support 分支仅查询 Service 与 Problem Classification 值并生成草
 
 - 全量 VM 健康检查。
 - 定向 CPU、内存、磁盘与网络诊断。
+- CPU credits、磁盘 burst credits、VM cached/uncached 存储上限诊断。
+- Host Reboot 与 Planned Maintenance 的 Resource Health、Service Health、Activity Log 对照。
 - VM 缺失、已解除分配或无指标数据。
 - 未启用 Azure Monitor Agent 时的内存指标缺失。
 - Resource Health 的无事件、已恢复事件与当前异常事件。
