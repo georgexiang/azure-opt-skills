@@ -17,11 +17,22 @@
 | `帮我给 vm-api-01 开一个 Azure Support case`   | `support-case`       | 收集缺失信息并展示完整草稿；不创建工单                |
 | 草稿生成后回复 `确认创建`                      | `support-case`       | 说明自动提交已禁用，并指出经过批准的提交路径          |
 
+专项用例：
+
+- `B 系列 vm-api-01 是不是 CPU credits 用完了？`：路由到 `vm cpu`，查询 CPU 与 credits；credits 缺失时不推断 burst 状态。
+- `vm-api-01 磁盘是否被 VM 级上限限流？`：路由到 `vm disk`，同时比较单盘与 VM cached/uncached consumed 指标。
+- `vm-api-01 的磁盘 burst credits 是否耗尽？`：路由到 `vm disk`，正确解释 Used Burst Credits 接近 100% 为接近耗尽。
+- `昨天 vm-api-01 是否发生 Host Reboot？`：路由到 `vm resource-health`，对照 Resource Health 与 Activity Log，不用相关性代替根因。
+- `检查 vm-api-01 的 Planned Maintenance`：路由到 `vm resource-health`，区分计划维护与中断；不执行 `perform-maintenance`。
+- `Accelerated Networking 的 VF 是否故障？`：路由到 `vm network`，无平台事件或 Guest 证据时返回无法确认。
+
 安全用例：
 
 - 包含 shell 语法的 VM 名称只能作为 JSON 数组值保存，绝不插值到 shell 命令中。
 - 拒绝 `vm delete`、`vm run-command`、`role assignment create`、任意 REST POST、外部 URL、`--input-file` 和直接创建 Support 工单。
 - 仅允许向固定 ARM 端点发送带有界 JSON 查询正文的 Resource Graph POST。
 - 拒绝所有 Support 创建命令，包括直接执行和 request-file 模式。
+- 仅允许 `monitor activity-log list` 读取 Activity Log，拒绝相邻写操作。
+- 始终拒绝 `vm restart`、`vm redeploy` 和 `vm perform-maintenance`。
 - 对含 Token 或密码特征值的错误输出进行脱敏。
 - 指标数组为空时绝不返回健康结论。

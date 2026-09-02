@@ -83,6 +83,12 @@ monitor metrics list --resource <vm> --resource-group <rg> --resource-type Micro
 
 单次孤立峰值仅是需要排查的线索，不能单独认定为持续 CPU 事件。
 
+当用户询问 B-series、CPU burst 或 CPU credits，或 `Percentage CPU` 异常且 Azure 返回 credits 指标时，额外查询 `CPU Credits Remaining` 和 `CPU Credits Consumed`，使用 `Average` 与一分钟粒度，并归约窗口起点、终点和最小剩余值。只有 Azure 实际返回有效 credits 样本时，才按 `vm-performance-patterns.md` 解释 burst 限流。credits 指标缺失时不得根据 SKU 名称推断。
+
+```text
+monitor metrics list --resource <vm> --resource-group <rg> --resource-type Microsoft.Compute/virtualMachines --metric "CPU Credits Remaining" "CPU Credits Consumed" --start-time <utc-start> --end-time <utc-end> --interval PT1M --aggregation Average --query value[].{metric:name.value,first:timeseries[0].data[?average!=null]|[0].average,last:timeseries[0].data[?average!=null]|[-1].average,minimum:min(timeseries[0].data[?average!=null].average),samples:length(timeseries[0].data[?average!=null])} -o json
+```
+
 ## 内存
 
 只有在已配置所需监控代理和采集规则时，Azure 才会暴露来宾内存指标。查询 `Available Memory Percentage`：
@@ -122,6 +128,8 @@ Data Disk Bandwidth Consumed Percentage
 Data Disk Latency
 VM Uncached IOPS Consumed Percentage
 VM Uncached Bandwidth Consumed Percentage
+VM Cached IOPS Consumed Percentage
+VM Cached Bandwidth Consumed Percentage
 ```
 
 在 VM 资源上查询 OS 盘与 VM 指标。对所有数据盘 LUN 序列使用 `--filter "LUN eq '*'"` 一次性查询。使用 `Maximum` 以及服务端 JMESPath 归约，避免向 guard 返回整段长时间序列。
@@ -142,6 +150,19 @@ VM Uncached Bandwidth Consumed Percentage
 - 任一磁盘 latency 峰值大于 200 ms。
 
 若某磁盘序列缺失，将该磁盘或维度标记为无法判断。若 Azure 返回了自定义 IOPS 与吞吐上限，需如实报告。不要基于过时的内嵌 SKU 表推导上限；应改为链接到最新 Azure managed disk 文档。
+
+当用户询问磁盘 burst，或单盘 consumed percentage/latency 异常时，按需查询以下指标：
+
+```text
+OS Disk Used Burst IO Credits Percentage
+OS Disk Used Burst BPS Credits Percentage
+Data Disk Used Burst IO Credits Percentage
+Data Disk Used Burst BPS Credits Percentage
+```
+
+这些指标表示已经使用的 credits 百分比，因此接近 100% 表示 credits 接近耗尽，不是“剩余接近 100%”。数据盘仍按所有实际 LUN 一次查询。只有存在有效样本时，才按 `vm-performance-patterns.md` 组合判断；指标缺失不得推断为“不支持 burst”或“credits 充足”。
+
+当单盘与 VM 级指标同时异常时，分别报告。`VM Cached/Uncached IOPS/Bandwidth Consumed Percentage` 达到 95% 表示 VM 级存储上限可能是瓶颈，此时不得把“仅升级或扩展单盘”作为确定有效的处置。
 
 ## 网络
 
@@ -180,5 +201,6 @@ monitor metrics list --resource <vm> --resource-group <rg> --resource-type Micro
 4. 每块实际磁盘各执行一次属性查询。
 5. 执行一次 Resource Health 查询。
 6. 分别给出 CPU、内存、磁盘、网络和 Resource Health 的判定。
+7. 仅在用户询问或基础指标命中相应线索时，读取 `vm-performance-patterns.md` 并执行按需 credits 查询。
 
 在汇总中保留 `N/A` 维度，避免把部分结果误呈现为“完全健康”。

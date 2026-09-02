@@ -28,6 +28,7 @@ USER_AZURE_EXTENSION_DIR = Path.home() / ".local" / "share" / "azure-cli" / "ext
 READ_COMMANDS = {
     ("account", "show"),
     ("disk", "show"),
+    ("monitor", "activity-log", "list"),
     ("monitor", "metrics", "list"),
     ("network", "nic", "show"),
     ("resource", "list"),
