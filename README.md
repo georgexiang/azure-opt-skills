@@ -2,15 +2,6 @@
 
 ## 概述
 
-此仓库将
-[`georgexiang/azure-ops-agent`](https://github.com/georgexiang/azure-ops-agent/tree/main)
-中的 Azure 运维能力抽取并整合为一个统一 Skill，供用户在 QM Web UI 中发现并调用。
-
-本次抽取基于源仓库 `main` 分支的以下提交：
-
-```text
-b2774d3db5a536ca2dd33b13714ff9f5fe399baa
-```
 
 该 Skill 资源名为：
 
