@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -78,6 +78,24 @@ DENIED_FLAGS = {
 }
 
 UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+SUBSCRIPTION_PATH_PATTERN = re.compile(r"/subscriptions/([^/?#]+)", re.IGNORECASE)
+SUBSCRIPTION_ENFORCED_COMMANDS = {
+    ("account", "show"),
+    ("disk", "show"),
+    ("monitor", "activity-log", "list"),
+    ("monitor", "metrics", "list"),
+    ("network", "nic", "show"),
+    ("resource", "list"),
+    ("resource", "show"),
+    ("vm", "get-instance-view"),
+    ("vm", "show"),
+}
+
+
+class TargetContext(NamedTuple):
+    tenant_id: str
+    default_subscription_id: str
+    allowlist: dict[str, set[str]]
 
 
 class GuardError(Exception):
@@ -134,6 +152,173 @@ def flag_value(args: list[str], *flags: str) -> str | None:
     if len(matches) > 1:
         raise GuardError("OPTION_DUPLICATE", f"Azure CLI option may appear only once: {'/'.join(flags)}")
     return matches[0] if matches else None
+
+
+def normalize_uuid(value: str, *, error_code: str, field_name: str) -> str:
+    normalized = value.strip().lower()
+    if not UUID_PATTERN.fullmatch(normalized):
+        raise GuardError(error_code, f"{field_name} must be a UUID")
+    return normalized
+
+
+def read_target_context() -> TargetContext | None:
+    tenant_raw = os.environ.get("QM_AZURE_OPS_TARGET_TENANT_ID", "").strip()
+    subscription_raw = os.environ.get("QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID", "").strip()
+    allowlist_raw = os.environ.get("QM_AZURE_OPS_TARGET_ALLOWLIST_JSON", "").strip()
+    present = [bool(tenant_raw), bool(subscription_raw), bool(allowlist_raw)]
+    if not any(present):
+        return None
+    if not all(present):
+        raise GuardError(
+            "TARGET_CONFIG_INVALID",
+            "QM_AZURE_OPS_TARGET_TENANT_ID, QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID, and QM_AZURE_OPS_TARGET_ALLOWLIST_JSON must be configured together",
+        )
+
+    tenant_id = normalize_uuid(
+        tenant_raw,
+        error_code="TARGET_CONFIG_INVALID",
+        field_name="QM_AZURE_OPS_TARGET_TENANT_ID",
+    )
+    default_subscription_id = normalize_uuid(
+        subscription_raw,
+        error_code="TARGET_CONFIG_INVALID",
+        field_name="QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID",
+    )
+    try:
+        allowlist_value = json.loads(allowlist_raw)
+    except json.JSONDecodeError as error:
+        raise GuardError("TARGET_CONFIG_INVALID", f"QM_AZURE_OPS_TARGET_ALLOWLIST_JSON must be valid JSON: {error.msg}") from error
+    if not isinstance(allowlist_value, list) or not allowlist_value or len(allowlist_value) > 200:
+        raise GuardError(
+            "TARGET_CONFIG_INVALID",
+            "QM_AZURE_OPS_TARGET_ALLOWLIST_JSON must be a non-empty list of {tenantId, subscriptionIds[]}",
+        )
+
+    allowlist: dict[str, set[str]] = {}
+    for index, item in enumerate(allowlist_value):
+        if not isinstance(item, dict) or set(item) != {"tenantId", "subscriptionIds"}:
+            raise GuardError(
+                "TARGET_CONFIG_INVALID",
+                f"allowlist entry {index} must contain exactly tenantId and subscriptionIds",
+            )
+        tenant_entry = normalize_uuid(
+            str(item.get("tenantId", "")),
+            error_code="TARGET_CONFIG_INVALID",
+            field_name=f"allowlist[{index}].tenantId",
+        )
+        subscriptions = item.get("subscriptionIds")
+        if not isinstance(subscriptions, list) or not subscriptions or len(subscriptions) > 500:
+            raise GuardError(
+                "TARGET_CONFIG_INVALID",
+                f"allowlist[{index}].subscriptionIds must be a non-empty list",
+            )
+        normalized_subscriptions: set[str] = set()
+        for sub_index, subscription in enumerate(subscriptions):
+            if not isinstance(subscription, str):
+                raise GuardError(
+                    "TARGET_CONFIG_INVALID",
+                    f"allowlist[{index}].subscriptionIds[{sub_index}] must be a UUID string",
+                )
+            normalized_subscriptions.add(
+                normalize_uuid(
+                    subscription,
+                    error_code="TARGET_CONFIG_INVALID",
+                    field_name=f"allowlist[{index}].subscriptionIds[{sub_index}]",
+                )
+            )
+        allowlist.setdefault(tenant_entry, set()).update(normalized_subscriptions)
+
+    tenant_subscriptions = allowlist.get(tenant_id)
+    if not tenant_subscriptions:
+        raise GuardError("TARGET_CONFIG_INVALID", "Target tenant is missing from QM_AZURE_OPS_TARGET_ALLOWLIST_JSON")
+    if default_subscription_id not in tenant_subscriptions:
+        raise GuardError(
+            "TARGET_CONFIG_INVALID",
+            "QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID must be listed for the target tenant in QM_AZURE_OPS_TARGET_ALLOWLIST_JSON",
+        )
+
+    return TargetContext(
+        tenant_id=tenant_id,
+        default_subscription_id=default_subscription_id,
+        allowlist=allowlist,
+    )
+
+
+def subscription_option_value(args: list[str]) -> str | None:
+    try:
+        return flag_value(args, "-s", "--subscription")
+    except GuardError as error:
+        if error.code != "OPTION_DUPLICATE":
+            raise
+        raise GuardError("TARGET_DENIED", "Azure subscription may be specified at most once") from error
+
+
+def resource_graph_subscriptions(args: list[str]) -> list[str]:
+    body = flag_value(args, "--body")
+    if body is None:
+        raise GuardError("RESOURCE_GRAPH_BODY_INVALID", "Resource Graph POST requires a bounded JSON body")
+    payload = json.loads(body)
+    subscriptions = payload.get("subscriptions")
+    if not isinstance(subscriptions, list):
+        raise GuardError("RESOURCE_GRAPH_BODY_INVALID", "Resource Graph subscriptions must be a non-empty bounded list")
+    return [str(value).strip().lower() for value in subscriptions]
+
+
+def extract_subscription_from_rest_url(url: str) -> str | None:
+    parsed = urlsplit(url)
+    match = SUBSCRIPTION_PATH_PATTERN.search(parsed.path)
+    if not match:
+        return None
+    return match.group(1).strip().lower()
+
+
+def enforce_target_contract(args: list[str], target: TargetContext | None) -> list[str]:
+    if target is None:
+        return list(args)
+    path = command_path(args)
+    if path == ("account", "set"):
+        raise GuardError("TARGET_DENIED", "az account set is not allowed")
+
+    tenant_subscriptions = target.allowlist[target.tenant_id]
+    if path == ("rest",):
+        method = (flag_value(args, "--method") or "get").lower()
+        raw_url = flag_value(args, "--url")
+        if not raw_url:
+            raise GuardError("REST_URL_REQUIRED", "az rest requires --url")
+        if method == "get":
+            rest_subscription = extract_subscription_from_rest_url(raw_url)
+            if rest_subscription is None:
+                if not target.tenant_id:
+                    raise GuardError("TARGET_DENIED", "Tenant-scoped ARM GET requires target tenant metadata")
+                return list(args)
+            if not UUID_PATTERN.fullmatch(rest_subscription):
+                raise GuardError("TARGET_DENIED", "ARM REST subscription in URL must be a UUID")
+            if rest_subscription not in tenant_subscriptions:
+                raise GuardError("TARGET_DENIED", "ARM REST subscription is outside the configured target allowlist")
+            return list(args)
+        if method == "post" and urlsplit(raw_url).path.lower() == RESOURCE_GRAPH_PATH.lower():
+            subscriptions = resource_graph_subscriptions(args)
+            for subscription in subscriptions:
+                if subscription not in tenant_subscriptions:
+                    raise GuardError(
+                        "TARGET_DENIED",
+                        "Resource Graph subscriptions must stay within the configured target allowlist",
+                    )
+            return list(args)
+        return list(args)
+
+    if path not in SUBSCRIPTION_ENFORCED_COMMANDS:
+        return list(args)
+
+    provided_subscription = subscription_option_value(args)
+    if provided_subscription is None:
+        return [*args, "--subscription", target.default_subscription_id]
+    normalized_subscription = provided_subscription.strip().lower()
+    if not UUID_PATTERN.fullmatch(normalized_subscription):
+        raise GuardError("TARGET_DENIED", "Azure subscription must be a UUID")
+    if normalized_subscription not in tenant_subscriptions:
+        raise GuardError("TARGET_DENIED", "Azure subscription is outside the configured target allowlist")
+    return list(args)
 
 
 def validate_output(args: list[str]) -> None:
@@ -208,6 +393,8 @@ def validate_rest(args: list[str]) -> None:
 def validate_read(args: list[str]) -> None:
     validate_common_args(args)
     path = command_path(args)
+    if path == ("account", "set"):
+        raise GuardError("TARGET_DENIED", "az account set is not allowed")
     if path == ("rest",):
         validate_rest(args)
         return
@@ -407,7 +594,7 @@ def authenticate_env_delivered(az_path: str, environment: dict[str, str]) -> Non
             raise GuardError("AUTH_REQUIRED", detail)
 
 
-def execute(args: list[str]) -> Any:
+def execute(args: list[str], target: TargetContext | None = None) -> Any:
     az_path = azure_cli_path()
     if not az_path:
         raise GuardError(
@@ -416,7 +603,8 @@ def execute(args: list[str]) -> Any:
         )
     command = [az_path, *normalize_output_args(args), "--only-show-errors"]
     environment = azure_environment()
-    authenticate_env_delivered(az_path, environment)
+    if target is None:
+        authenticate_env_delivered(az_path, environment)
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         try:
             result = subprocess.run(
@@ -472,7 +660,9 @@ def main(argv: list[str] | None = None) -> int:
             if args[:1] == ["--"]:
                 args = args[1:]
         validate_read(args)
-        emit(execute(args))
+        target = read_target_context()
+        args = enforce_target_contract(args, target)
+        emit(execute(args, target))
         return 0
     except GuardError as error:
         emit({"error": error.code, "message": redact(error.message)})

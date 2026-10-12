@@ -65,4 +65,4 @@ support services problem-classifications list --service-name <service-name> -o j
 技术资源: <verified resource ID when available>
 ```
 
-不要构造或执行 `support in-subscription tickets create`。当用户要求继续时，需明确说明该 QM Skill 有意禁用自动 Support 提交，并引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 以便授权运维人员使用。
+不要构造或执行 `support in-subscription tickets create`。当用户要求继续时，需明确说明该 QM Skill 有意禁用自动 Support 提交。若运营方已导入独立的 `azure-support-ticket` Skill，则将已确认的非凭据事实移交给它；实际执行必须在平台强制隔离的专用 Support 环境中完成，并由该 Skill 补齐 CLI 必填联系人字段、核验目标并重新确认提交。否则，引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 的受控存储以便授权运维人员使用。

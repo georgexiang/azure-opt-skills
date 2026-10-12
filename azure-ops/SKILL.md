@@ -3,7 +3,7 @@ name: azure-ops
 description: >-
   使用中文或英文诊断并解释 Azure 运维问题。适用于 Azure VM 全面健康检查、CPU、内存、磁盘、网络、
   Resource Health、订阅级 Service Health、主机名或 VM 资源查询、Azure 产品问题，以及生成 Azure
-  Support 工单草稿并通过经过批准的外部流程提交。
+  Support 工单草稿；实际提交需移交独立的 azure-support-ticket Skill 或批准的外部流程。
 requiredCapabilities:
   - egress:login.microsoftonline.com
   - egress:management.azure.com
@@ -31,6 +31,8 @@ requiredCapabilities:
 | Azure 概念、产品、SKU、配额、价格、区域、对比或用户粘贴的错误解释 | `qa`                                           | 仅阅读本文件                      |
 | 生成 Azure Support 工单草稿或准备提交                             | `support-case`                                 | `references/support-case.md`      |
 
+用户要求实际提交时，本 Skill 仍只生成草稿；将已确认事实移交独立的 `azure-support-ticket` Skill，由其检查专用 Support 执行环境并重新确认提交。若未导入该 Skill 或缺少隔离环境，则使用 Azure Portal 或组织批准的外部流程。
+
 选择模式分析时，还要先阅读该模式依赖的基础 reference，并复用其中的查询结果。不要把服务范围的故障问题当作 VM Resource Health 请求。不要把主机名查询当作诊断。Guest 进程、文件系统、应用日志或非 VM 实时诊断请求超出实时诊断边界；应说明限制，并建议相关的 Azure 原生诊断入口。
 
 ## 实时操作契约
@@ -50,6 +52,20 @@ requiredCapabilities:
 
 Guard 要求 Azure CLI 已在当前 QM Scope 中完成身份验证。如果返回 `AZ_NOT_FOUND`，运行一次随附安装器并重试。如果返回 `AUTH_REQUIRED`，停止实时查询，并说明运营方必须为该 Scope 配置只读 Azure 身份。不要要求用户把 Secret 粘贴到聊天中。
 
+当 QM 注入以下绑定元数据时，Guard 会将其视为强约束并在每次执行前校验：
+
+- `QM_AZURE_OPS_TARGET_TENANT_ID`：本轮目标 tenant UUID；
+- `QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID`：默认 subscription UUID；
+- `QM_AZURE_OPS_TARGET_ALLOWLIST_JSON`：允许列表，结构固定为 `[{"tenantId":"<uuid>","subscriptionIds":["<uuid>", ...]}]`。
+
+三项要么全部缺失（兼容旧行为），要么全部存在且合法；任一缺失、UUID 非法、JSON 非法、或默认 subscription 不在 allowlist 内都会返回 `TARGET_CONFIG_INVALID`。在该模式下：
+
+- 允许列表内的常规读取命令若缺失 `--subscription`，Guard 会注入默认 subscription；若用户显式提供，则必须等于 allowlist 中该 tenant 的允许 subscription，否则返回 `TARGET_DENIED`；
+- `account show` 也会按同样规则注入并解析默认 subscription；
+- Resource Graph POST 的 body 里每个 `subscriptions` 值都必须落在目标 tenant allowlist 子集内；
+- ARM REST GET 若 URL 含 `/subscriptions/<id>`，该 id 必须被 allowlist 允许；
+- ARM REST GET 若是不含 subscription 的 tenant 级路径，在存在目标 tenant 元数据时可继续读取，但无法在 CLI 层强制令牌 tenant。
+
 可信的 QM 组织部署可以由管理员通过 **Admin → Shared service credentials → Env delivery** 配置专用只读 service principal：
 
 - `AZURE_OPS_TENANT_ID`：目标 tenant UUID；
@@ -57,6 +73,15 @@ Guard 要求 Azure CLI 已在当前 QM Scope 中完成身份验证。如果返�
 - `AZURE_OPS_CLIENT_CERTIFICATE_PEM`：同时包含私钥与证书的 PEM。
 
 三项必须同时存在。Guard 会验证 UUID 与 PEM 结构，将 PEM 写入临时 `0600` 文件，执行固定的 service-principal certificate login，再执行原只读白名单命令；PEM 不会进入查询子进程环境、输出或持久文件。Agent 仍禁止直接执行 `az login`。Env delivery 是 org-wide 的，只有明确接受所有 Scope 共享该身份的可信环境才可使用，并且 Azure RBAC 必须限制为 Reader。
+
+当用户明确要求连接或重连 Azure（例如“connect Azure”“reconnect Azure”）时，允许执行一次受控交互登录流程：
+
+1. 先运行 `bash skills/azure-ops/scripts/install_azure_cli.sh --check`，失败则使用 `background` 工具运行安装器并等待完成；
+2. 不经过 Guard，直接通过 `background` 工具运行固定命令：`az login --tenant <requested-tenant-uuid> --use-device-code --allow-no-subscriptions --only-show-errors`；
+3. 不接受也不索取任何 secret、密码、证书私钥或 token；
+4. 登录完成后，必须通过 Guard 执行 `account show` 验证当前上下文。
+
+该流程用于平台批准的交互式设备码登录，并支持 WebUI 预填充登录链路。
 
 ## 安全边界
 

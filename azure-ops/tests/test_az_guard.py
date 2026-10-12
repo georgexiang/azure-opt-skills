@@ -17,6 +17,20 @@ az_guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(az_guard)
 
 SUBSCRIPTION = "11111111-1111-4111-8111-111111111111"
+TARGET_TENANT = "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3"
+OTHER_SUBSCRIPTION = "22222222-2222-4222-8222-222222222222"
+TARGET_ENV = {
+    "QM_AZURE_OPS_TARGET_TENANT_ID": TARGET_TENANT,
+    "QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID": SUBSCRIPTION,
+    "QM_AZURE_OPS_TARGET_ALLOWLIST_JSON": json.dumps(
+        [
+            {
+                "tenantId": TARGET_TENANT,
+                "subscriptionIds": [SUBSCRIPTION],
+            }
+        ]
+    ),
+}
 
 
 def support_args() -> list[str]:
@@ -45,6 +59,9 @@ class GuardValidationTests(unittest.TestCase):
 
     def test_denies_destructive_command(self) -> None:
         self.assert_guard_error("COMMAND_DENIED", lambda: az_guard.validate_read(["vm", "delete", "-g", "rg", "-n", "vm"]))
+
+    def test_denies_account_set_with_target_denied(self) -> None:
+        self.assert_guard_error("TARGET_DENIED", lambda: az_guard.validate_read(["account", "set", "-s", SUBSCRIPTION]))
 
     def test_denies_vm_remediation_commands(self) -> None:
         for operation in ("restart", "redeploy", "perform-maintenance"):
@@ -264,6 +281,117 @@ class GuardValidationTests(unittest.TestCase):
             lambda: az_guard.validate_read(["vm", "show", "-n", "x" * 50_001]),
         )
 
+    def test_target_context_absent_keeps_legacy_mode(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(az_guard.read_target_context())
+
+    def test_target_context_partial_values_are_invalid(self) -> None:
+        with patch.dict(os.environ, {"QM_AZURE_OPS_TARGET_TENANT_ID": TARGET_TENANT}, clear=True):
+            self.assert_guard_error("TARGET_CONFIG_INVALID", lambda: az_guard.read_target_context())
+
+    def test_target_context_rejects_default_outside_allowlist(self) -> None:
+        env = {
+            "QM_AZURE_OPS_TARGET_TENANT_ID": TARGET_TENANT,
+            "QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID": OTHER_SUBSCRIPTION,
+            "QM_AZURE_OPS_TARGET_ALLOWLIST_JSON": json.dumps(
+                [
+                    {
+                        "tenantId": TARGET_TENANT,
+                        "subscriptionIds": [SUBSCRIPTION],
+                    }
+                ]
+            ),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assert_guard_error("TARGET_CONFIG_INVALID", lambda: az_guard.read_target_context())
+
+    def test_target_context_rejects_invalid_allowlist_json(self) -> None:
+        env = {
+            "QM_AZURE_OPS_TARGET_TENANT_ID": TARGET_TENANT,
+            "QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID": SUBSCRIPTION,
+            "QM_AZURE_OPS_TARGET_ALLOWLIST_JSON": "not-json",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assert_guard_error("TARGET_CONFIG_INVALID", lambda: az_guard.read_target_context())
+
+    def test_enforces_default_subscription_injection(self) -> None:
+        args = ["vm", "show", "-g", "rg", "-n", "vm"]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            normalized = az_guard.enforce_target_contract(args, az_guard.read_target_context())
+        self.assertEqual(normalized[-2:], ["--subscription", SUBSCRIPTION])
+
+    def test_enforces_account_show_default_subscription_injection(self) -> None:
+        args = ["account", "show"]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            normalized = az_guard.enforce_target_contract(args, az_guard.read_target_context())
+        self.assertEqual(normalized[-2:], ["--subscription", SUBSCRIPTION])
+
+    def test_denies_mismatched_subscription(self) -> None:
+        args = ["vm", "show", "-g", "rg", "-n", "vm", "--subscription", OTHER_SUBSCRIPTION]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            self.assert_guard_error(
+                "TARGET_DENIED",
+                lambda: az_guard.enforce_target_contract(args, az_guard.read_target_context()),
+            )
+
+    def test_denies_duplicate_subscription_flags(self) -> None:
+        args = ["account", "show", "-s", SUBSCRIPTION, "--subscription", SUBSCRIPTION]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            self.assert_guard_error(
+                "TARGET_DENIED",
+                lambda: az_guard.enforce_target_contract(args, az_guard.read_target_context()),
+            )
+
+    def test_resource_graph_subscriptions_must_be_target_subset(self) -> None:
+        body = json.dumps({"subscriptions": [SUBSCRIPTION, OTHER_SUBSCRIPTION], "query": "Resources | limit 1"})
+        args = [
+            "rest",
+            "--method",
+            "post",
+            "--url",
+            "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01",
+            "--body",
+            body,
+        ]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            self.assert_guard_error(
+                "TARGET_DENIED",
+                lambda: az_guard.enforce_target_contract(args, az_guard.read_target_context()),
+            )
+
+    def test_arm_rest_subscription_in_url_must_be_target_subset(self) -> None:
+        args = [
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            f"https://management.azure.com/subscriptions/{OTHER_SUBSCRIPTION}/resources?api-version=2021-04-01",
+        ]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            self.assert_guard_error(
+                "TARGET_DENIED",
+                lambda: az_guard.enforce_target_contract(args, az_guard.read_target_context()),
+            )
+
+    def test_tenant_wide_arm_rest_get_remains_allowed_with_target_metadata(self) -> None:
+        args = [
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            "https://management.azure.com/providers/Microsoft.Authorization/policyDefinitions?api-version=2023-04-01",
+        ]
+        az_guard.validate_read(args)
+        with patch.dict(os.environ, TARGET_ENV, clear=True):
+            normalized = az_guard.enforce_target_contract(args, az_guard.read_target_context())
+        self.assertEqual(normalized, args)
+
 
 class RequestFileTests(unittest.TestCase):
     def test_reads_workspace_request(self) -> None:
@@ -433,6 +561,54 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(commands[1][1:3], ["account", "show"])
         self.assertNotIn(certificate, " ".join(value for command in commands for value in command))
         self.assertNotIn("AZURE_OPS_CLIENT_CERTIFICATE_PEM", run.call_args.kwargs["env"])
+
+    def test_target_context_disables_env_delivered_certificate_login(self) -> None:
+        certificate = "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----\n-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n"
+        commands = []
+
+        def complete(command, **kwargs):
+            commands.append(command)
+            kwargs["stdout"].write(b'{"ok":true}\n')
+            return subprocess.CompletedProcess(command, 0)
+
+        delivered = {
+            "AZURE_OPS_TENANT_ID": "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3",
+            "AZURE_OPS_CLIENT_ID": "11111111-1111-4111-8111-111111111111",
+            "AZURE_OPS_CLIENT_CERTIFICATE_PEM": certificate,
+            **TARGET_ENV,
+        }
+        with patch.dict(os.environ, delivered, clear=True), patch.object(
+            az_guard, "azure_cli_path", return_value="/root/.local/bin/az"
+        ), patch.object(az_guard.subprocess, "run", side_effect=complete):
+            result = az_guard.execute(["account", "show"], az_guard.read_target_context())
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][1:3], ["account", "show"])
+
+    def test_sp_only_mode_keeps_env_delivered_certificate_login(self) -> None:
+        certificate = "-----BEGIN PRIVATE KEY-----\nprivate\n-----END PRIVATE KEY-----\n-----BEGIN CERTIFICATE-----\npublic\n-----END CERTIFICATE-----\n"
+        commands = []
+
+        def complete(command, **kwargs):
+            commands.append(command)
+            if command[1:3] != ["login", "--service-principal"]:
+                kwargs["stdout"].write(b'{"ok":true}\n')
+            return subprocess.CompletedProcess(command, 0)
+
+        delivered = {
+            "AZURE_OPS_TENANT_ID": "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3",
+            "AZURE_OPS_CLIENT_ID": "11111111-1111-4111-8111-111111111111",
+            "AZURE_OPS_CLIENT_CERTIFICATE_PEM": certificate,
+        }
+        with patch.dict(os.environ, delivered, clear=True), patch.object(
+            az_guard, "azure_cli_path", return_value="/root/.local/bin/az"
+        ), patch.object(az_guard.subprocess, "run", side_effect=complete):
+            result = az_guard.execute(["account", "show"], None)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(commands[0][1:3], ["login", "--service-principal"])
+        self.assertEqual(commands[1][1:3], ["account", "show"])
 
     def test_incomplete_env_delivered_auth_is_rejected(self) -> None:
         with patch.dict(os.environ, {"AZURE_OPS_TENANT_ID": "35fab2a8-2b8f-416a-b5c0-7578d2dfa1e3"}, clear=True), patch.object(

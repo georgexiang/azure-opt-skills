@@ -11,6 +11,8 @@
 
 主 `SKILL.md` 负责意图路由、工作流编排与安全约束。详细命令、阈值、输出模板与执行脚本仍作为同一 Skill 的内部资产保留。
 
+仓库另提供独立 `/azure-support-ticket`，用于在**与诊断 Sandbox 隔离的专用 Support 执行环境**中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
+
 ## 目标
 
 1. 将源仓库中的 Azure Skills 合并为一个 QM Skill。
@@ -112,6 +114,8 @@ https://github.com/georgexiang/azure-opt-skills
 
 注册后选择 `Browse skills...`，并将 `azure-ops` 导入目标 Scope。仓库更新后使用 `Sync now`。无需构建或替换 Sandbox 镜像。
 
+如需实际提交，另行导入 `azure-support-ticket` bundle（包含 `SKILL.md`、`references/submission.md` 和 `tests/cases.md`）。该 bundle 不依赖另一个 Skill 的文件路径，也不内置认证或安装脚本；专用执行环境的 Azure CLI、Support extension、独立认证和允许目标由运营方配置。普通 QM Scope 导入它并不会获得写入能力。
+
 QM 会将该 Git Pack 发布为 Skill bundle，并在 Web UI 中展示以下信息：
 
 - 名称：`/azure-ops`
@@ -165,12 +169,24 @@ Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命
 
 对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员可以通过 **Admin → Shared service credentials → Env delivery** 配置 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID` 和 `AZURE_OPS_CLIENT_CERTIFICATE_PEM`。Guard 只接受完整的三项组合，并使用临时 `0600` PEM完成固定的 certificate login；它不会开放任意 `az login`，也不会把 PEM转发给读取命令。此模式必须配合 tenant root management group 或目标 subscriptions 上的 Reader RBAC，不能授予写角色。
 
+当 QM 注入 target 绑定元数据时，Guard 会在命令执行前强制目标契约：
+
+- `QM_AZURE_OPS_TARGET_TENANT_ID`
+- `QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID`
+- `QM_AZURE_OPS_TARGET_ALLOWLIST_JSON`（格式固定：`[{tenantId,subscriptionIds[]}]`）
+
+三项全部缺失表示兼容旧行为；只要部分缺失、UUID 非法、allowlist JSON 非法、或默认 subscription 不在 allowlist 内，Guard 都会返回 `TARGET_CONFIG_INVALID`。启用 target 绑定后，所有常规 Azure 读取命令必须落在 allowlist subscription 内，缺失 `--subscription` 时由 Guard 自动注入默认 subscription；重复或不匹配订阅将返回 `TARGET_DENIED`。Resource Graph POST 的 `subscriptions` 也必须是 allowlist 子集。
+
+对于用户明确提出“连接 Azure / 重连 Azure”的请求，允许一次平台批准的显式 Device Code 流程：先执行安装检查（必要时后台安装），再通过后台工具运行固定命令 `az login --tenant <requested tenant> --use-device-code --allow-no-subscriptions --only-show-errors`。该交互登录不经过 Guard，不接受任何 secret 输入；完成后必须通过 Guard 执行 `account show` 校验上下文。
+
 建议将权限拆分为两个身份：
 
 | 身份         | 用途                                                              | 权限原则                                   |
 | ------------ | ----------------------------------------------------------------- | ------------------------------------------ |
 | 诊断身份     | VM、Monitor、Resource Health、Service Health、Resource Graph 读取 | 只读与最小权限                             |
-| Support 提交 | 通用 Sandbox 中不配置                                             | 通过 Azure Portal 或组织批准的外部流程提交 |
+| Support 提交 | 与诊断 Sandbox 隔离的专用执行环境；通用 Sandbox 中不配置             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
+
+独立 `/azure-support-ticket` 的实际提交流程是：核验 tenant/subscription → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
 ## Azure CLI 安全层
 
