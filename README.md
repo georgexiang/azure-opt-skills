@@ -116,6 +116,26 @@ https://github.com/georgexiang/azure-opt-skills
 
 如需实际提交，另行导入 `azure-support-ticket` bundle（包含 `SKILL.md`、`references/submission.md` 和 `tests/cases.md`）。该 bundle 不依赖另一个 Skill 的文件路径，也不内置认证或安装脚本；专用执行环境的 Azure CLI、Support extension、独立认证和允许目标由运营方配置。普通 QM Scope 导入它并不会获得写入能力。
 
+### 多租户 Support 提交流程
+
+`azure-support-ticket` 将 Project 视为多租户、多订阅执行环境，而不是把当前 Azure CLI 默认订阅当作提交目标：
+
+1. 用用户提供的 tenant、subscription ID 或名称搜索 Project memory 中的非敏感 Support profile 映射。
+2. 实时核验每个候选 profile，并在提交前展示当前 Project 可访问的 tenant/subscription 清单及本次选中项。
+3. 目标 subscription 没有匹配身份时，先取得正确 tenant ID，再在专用环境中执行显式 `--tenant` 的 device-code 登录。
+4. 登录后固定目标 subscription，重新核验清单、Support extension、provider、服务目录和可读取的写入权限。
+5. 仅保存 tenant/subscription/profile 路由信息；认证材料留在批准的 resident profile 中。
+
+该流程修复了以下失败模式：
+
+- 单租户假设使 Agent 只检查默认订阅，并把“目标订阅不可见”误认为整个 Environment 没有身份。
+- device-code 登录落入 common/organizations 路径，触发 Conditional Access；明确 tenant 的同类登录可以走正确策略。
+- 隔离 profile 登录成功，但提交 conversation 没有选择它，因而继续使用旧订阅。
+- Environment attachment、resident credential、Keychain grant 和 Project memory 被误认为同一个授权面。
+- Memory 因 attachment 写入其他 scope 或无法回读，却被错误宣称为可供后续 conversation 自动使用。
+
+Memory 只负责发现候选；Azure 的实时 `account list/show`、目标精确匹配和提交前用户确认才构成选择证据。Skill 不从其他 Project 复制 token/cache，也不以当前默认订阅替代目标。
+
 QM 会将该 Git Pack 发布为 Skill bundle，并在 Web UI 中展示以下信息：
 
 - 名称：`/azure-ops`
@@ -186,7 +206,7 @@ Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命
 | 诊断身份     | VM、Monitor、Resource Health、Service Health、Resource Graph 读取 | 只读与最小权限                             |
 | Support 提交 | 与诊断 Sandbox 隔离的专用执行环境；通用 Sandbox 中不配置             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
 
-独立 `/azure-support-ticket` 的实际提交流程是：核验 tenant/subscription → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
+独立 `/azure-support-ticket` 的实际提交流程是：搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
 ## Azure CLI 安全层
 

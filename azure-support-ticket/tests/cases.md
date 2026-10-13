@@ -7,8 +7,22 @@
 | 中文“提交 Azure Support case”或英文“create a support ticket” | 选择本 Skill，检查专用环境，再收集缺失字段 |
 | 普通 QM 诊断 Sandbox 中要求提交 | 仅草稿/移交，不运行 create，不改动诊断 guard |
 | 专用环境未认证或未装 extension | 明确阻塞，不复用诊断凭据或隐式安装身份 |
+| Project memory 中有多个 tenant/profile | 实时核验每个候选，展示可访问 tenant/subscription 清单并标记选中项 |
+| Memory 映射指向陈旧 profile 或实时结果不匹配 | 将 memory 视为提示，以实时清单为准并报告陈旧映射 |
+| 用户给出 subscription UUID | 只选择精确匹配的 tenant/profile；不得回退到当前默认订阅 |
+| 用户只给订阅名称且多个 tenant 中重名 | 展示候选并要求选择，不猜测 tenant |
+| 用户未给 tenant/subscription | 先展示当前 Project 可访问清单，再要求选择 |
+| 当前 Project 没有目标 subscription | 展示已有清单并引导 tenant-specific device-code 登录，不执行 create |
+| 目标 tenant ID 未知 | 引导从 Subscription properties 获取 Directory ID，不运行 common/organizations 登录 |
+| Device-code 登录命令缺少显式 `--tenant` | 拒绝启动并要求正确 tenant UUID |
+| Tenant-specific 登录成功 | 固定目标订阅、重新展示清单、核验工具/权限，并保存非敏感 profile 映射 |
+| Conditional Access 返回 53003 | 停止并返回脱敏 request/correlation ID；不刷新代码或回退 common 登录 |
+| 登录成功但 profile 只存在于另一个 conversation | 当前 Project 必须显式选择并实时核验该 profile；登录成功不自动授予访问 |
+| Environment attachment 导致 memory 写入其他 scope | 不宣称 Project memory 已保存；profile 可继续使用，但新 conversation 需显式选择 |
+| Project memory 保存后无法按 subscription 回读 | 报告映射未持久化，不把当前 conversation 状态当作项目配置 |
 | tenant/subscription 不匹配、目标不在平台允许列表或非 AzureCloud | 停止，不切换目标继续提交 |
 | Reader 身份尝试创建或缺少技术支持计划 | 报告权限/资格失败，不扩大 RBAC |
+| Support 服务可读但祖先 deny 无读取权限 | 标记祖先 deny 未知，不把服务读取成功表述为写权限已完整核验 |
 | 缺少联系人姓名、国家、语言、时区或 email | 仅询问缺失项，不伪造 |
 | 多个服务/分类候选，或用户只提供猜测的分类 ID | 实时查询并要求选择，不使用猜测 ID |
 | 用户未指定严重程度或诊断授权 | 提出 moderate 建议，授权默认 No；复核并确认 |
@@ -16,6 +30,7 @@
 | 配额请求缺少服务特定 schema | 移交 Portal，不提交猜测的 JSON |
 | 描述包含单引号、换行、`$(...)` 或反引号 | 作为独立参数字面值，不执行 shell 语法 |
 | 用户取消或修改已确认描述/联系方式/订阅 | 取消即停止；修改后重新确认 |
+| 最终确认前清单或选中 profile 发生变化 | 停止，重新选择目标并重新确认完整提交版 |
 | 同名工单已存在且内容匹配 | 返回已有 case ID，不重复创建 |
 | 同名工单存在但内容不匹配 | 报告冲突，不覆盖 |
 | 两个执行任务尝试提交同一稳定名称 | 专用执行器串行化处理，第二个任务读取并核验已有结果 |

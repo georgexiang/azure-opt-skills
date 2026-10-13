@@ -1,6 +1,69 @@
 # 专用环境的提交与恢复
 
-仅在 `SKILL.md` 的执行隔离、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；全部 Azure 调用显式指定 subscription。身份由运营方预配置，Skill 不执行登录或角色分配。
+仅在 `SKILL.md` 的执行隔离、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；全部 Azure 调用显式指定 subscription。身份优先使用运营方预配置或当前 Project memory 映射的 resident profile；缺少匹配 profile 时，只允许在专用 Support 环境执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配。
+
+## 多租户身份发现与选择
+
+先从当前 Project memory 搜索目标 subscription ID、tenant ID、subscription 名称及 `azure-support-profile`。只接受当前 Project 或平台批准的 attached Support environment 所指向的 profile；来自其他 Project、Personal scope、历史聊天正文或无法确认作用域的路径不进入候选集。
+
+推荐的非敏感 memory 记录格式为：
+
+```text
+azure-support-profile tenantId=<tenant-uuid> subscriptionId=<subscription-uuid> profile=<label> configDir=<approved-absolute-path>
+```
+
+Memory 是路由提示。每个候选都必须使用其 `AZURE_CONFIG_DIR` 实时执行：
+
+```text
+az account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
+```
+
+执行器通过进程环境传入已批准的 `AZURE_CONFIG_DIR`，不把 profile 路径拼入用户可控的 shell 语法。不得读取、复制或输出目录内的 token/cache。对清单中每个候选 subscription，再执行 `account show --subscription <subscription-uuid>` 核验实时上下文。
+
+向用户展示一张清单：
+
+| 字段 | 内容 |
+| ---- | ---- |
+| Profile | 非敏感 label 或批准来源 |
+| Tenant | tenant UUID |
+| Subscription | 名称和 UUID |
+| State / Cloud | 必须为 `Enabled` / `AzureCloud` |
+| Selected | 本次是否选中 |
+
+选择规则：
+
+1. 用户指定 subscription UUID 时只选择精确匹配项。
+2. 用户只指定名称时，唯一精确名称可选；多个匹配必须让用户选择。
+3. 用户未指定目标时，先展示清单并让用户选择。
+4. 清单无匹配项时进入 tenant-specific 登录；不得切换到当前默认 subscription 继续。
+5. Memory 映射与实时结果不一致时，以实时结果为准并报告陈旧映射。
+
+## 缺少匹配身份时登录
+
+先让操作者提供或从受信任的订阅属性中取得目标 tenant UUID。tenant 未知时停止并引导其从 Azure Portal 的 Subscription properties 获取 Directory ID；不要通过 common/organizations 登录猜测 tenant。
+
+为该 tenant 使用运营方批准的持久目录；新目录推荐为：
+
+```text
+$HOME/.azure-support/profiles/<tenant-uuid>
+```
+
+目录权限设为 `0700`，且不得覆盖其他 tenant 的 profile。通过后台/长任务工具运行：
+
+```text
+az login --tenant <tenant-uuid> --use-device-code --output none
+```
+
+只向操作者显示 Microsoft 设备登录 URL、一次性代码和等待状态。授权完成后：
+
+```text
+az account set --subscription <subscription-uuid>
+az account show --subscription <subscription-uuid> --query '{subscription:id,name:name,tenant:tenantId,cloud:environmentName,state:state}' --output json
+```
+
+目标 subscription 不可见、tenant 不匹配、状态不是 `Enabled` 或 Conditional Access 拒绝时停止。保留脱敏后的错误代码和 request/correlation ID；不刷新代码来绕过策略，不回退到无 `--tenant` 的登录。
+
+登录核验成功后，重新生成完整 tenant/subscription 清单并展示选中项。仅保存上述非敏感 memory 映射；保存后按 subscription ID 回读。回读结果必须来自当前 Project scope 且内容匹配，否则报告“profile 可用，但 Project memory 映射未持久化”，后续 conversation 需要显式选择该 profile。
 
 ## 工具与上下文
 
@@ -10,7 +73,16 @@ az extension show --name support --query version --output tsv
 az account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
 ```
 
-需要 Support extension 的 `in-subscription tickets` 命令。Azure CLI 文档要求 CLI 2.57.0 或更高；具体安装版本由专用执行器固定和维护。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。缺少 extension 时让运营方安装，避免隐式动态安装。
+上述命令与后续每条 Azure 命令都使用同一个选中 profile 环境。需要 Support extension 的 `in-subscription tickets` 命令。Azure CLI 文档要求 CLI 2.57.0 或更高；具体安装版本由专用执行器固定和维护。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。缺少 extension 时让运营方安装到选中 profile 或批准的共享 extension 目录，避免在写入步骤隐式动态安装。
+
+在读取分类前还要核验：
+
+```text
+az provider show --subscription <subscription-uuid> --namespace Microsoft.Support --query registrationState --output tsv
+az support services list --subscription <subscription-uuid> --query 'length(@)' --output tsv
+```
+
+身份返回的有效 actions 必须覆盖 `Microsoft.Support/supportTickets/write`。订阅和可读祖先 scope 的 deny assignment 不得覆盖该 action；祖先 deny 无读取权限时展示为未知，并说明创建调用可能是第一项权威验证。登录成功或服务列表可读本身不证明拥有写权限或有效支持计划。
 
 ## 服务与问题分类
 
