@@ -1,4 +1,4 @@
-# Project Case Upload 验收场景
+# Case Summery 验收场景
 
 使用合成 `.md` 附件，在已安装受控 `project_case_upload` 工具的隔离项目中运行。完成标准以服务端回执、持久化原文和日报来源为准，不以助手回复为准。
 

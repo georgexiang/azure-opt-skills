@@ -13,7 +13,7 @@
 
 仓库另提供独立 `/azure-support-ticket`，用于在**与诊断 Sandbox 隔离的专用 Support 执行环境**中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
 
-另提供独立 [`/project-case-upload`](project-case-upload/SKILL.md)：将当前项目会话中用户上传的 `.md` Case 文档导入项目日报。它依赖平台原生 `project_case_upload` 工具及配套日报功能；只导入 Markdown 原附件，不创建支持工单、不需要 Azure 凭据。明确含 Case 时自动保存，不确定时请求文件级确认。新增 Bundle 后仍需通过 Git Pack 导入/同步到目标项目可访问的 Scope；仅复制技能文件不能提供后端能力。交互验收场景见 [测试清单](project-case-upload/tests/cases.md)。
+另提供独立 [`/case-summery`](case-summery/SKILL.md)：将当前项目会话中用户上传的 `.md` Case 文档导入项目日报。它依赖平台原生 `project_case_upload` 工具及配套日报功能；只导入 Markdown 原附件，不创建支持工单、不需要 Azure 凭据。明确含 Case 时自动保存，不确定时请求文件级确认。新增 Bundle 后仍需通过 Git Pack 导入/同步到目标项目可访问的 Scope；仅复制技能文件不能提供后端能力。交互验收场景见 [测试清单](case-summery/tests/cases.md)。
 
 ## 目标
 

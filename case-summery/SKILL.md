@@ -1,5 +1,5 @@
 ---
-name: project-case-upload
+name: case-summery
 description: >-
   将当前项目会话中用户上传的 Markdown Case 文档导入项目日报。用于用户要求导入、
   保存 MD 附件中的 Case 进展，或回复“确认导入 <确认编号>”完成本次不确定文档的确认。
