@@ -1,9 +1,13 @@
-# Case Summery / On-call Schedule 验收场景
+# Case Summary / On-call Schedule 验收场景
 
 使用合成 `.md` 附件，在已安装受控 `project_case_upload` 工具的隔离项目中运行。完成标准以服务端回执、持久化原文和日报来源为准，不以助手回复为准。
 
 | 场景 | 预期 |
 | --- | --- |
+| 规范入口名称和目录 | `case-summary-oncall-schedule` 与 SKILL.md frontmatter 一致 |
+| 后端尚未允许规范名称 | 明确不兼容，不声称仅同步 Git Pack 即可完成迁移 |
+| 完整读取规范名称后导入 | 匹配后端返回原生工具回执；导入轮次仍从会话摘要排除 |
+| 旧入口迁移 | 验证新名后才归档旧名；历史记录保留，不扩大导入权限 |
 | 任意 Markdown 列表包含多个 Case | 无需重写模板；自动导入原 MD |
 | Case 无编号、状态或处理人 | 可识别为 Case 时导入；缺失项不编造 |
 | 纯排班或 Case + 排班混合 MD | 任一明确主题可保存，混合原文只存一份 |

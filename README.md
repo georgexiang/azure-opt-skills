@@ -13,7 +13,19 @@
 
 仓库另提供独立 `/azure-support-ticket`，用于在**与诊断 Sandbox 隔离的专用 Support 执行环境**中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
 
-另提供独立 [`/case-summery-oncall-schedule`](case-summery-oncall-schedule/SKILL.md)：将当前项目用户上传的原始 `.md` Case、On-call 排班或混合资料导入项目日报，分别展示 `Case Summary` 和 `On-call Schedule`。任一主题明确即可保存；没有明确主题但有疑义时请求真人确认，确认不等于核实不确定业务事实。仅使用报告日上传资料，排班列表突出报告日期、不自动跨日复用；导入轮次及回复不进入新版会话摘要，普通讨论保留。依赖平台原生 `project_case_upload` 及匹配 Core/Digest 版本，不创建工单或排班台账、不需要 Azure 凭据。目标 Scope 的 Git Pack 需固定新提交和 subset `["case-summery-oncall-schedule"]`，旧 Skill 归档保留、Core 暂兼容旧名；仅合并 Git 或复制文件不等于平台发布。交互验收见 [测试清单](case-summery-oncall-schedule/tests/cases.md)。
+另提供独立 [`/case-summary-oncall-schedule`](case-summary-oncall-schedule/SKILL.md)：将当前项目用户上传的原始 `.md` Case、On-call 排班或混合资料导入项目日报，分别展示 `Case Summary` 和 `On-call Schedule`。任一主题明确即可保存；没有明确主题但有疑义时请求真人确认，确认不等于核实不确定业务事实。仅使用报告日上传资料，排班列表突出报告日期、不自动跨日复用；导入轮次及回复不进入新版会话摘要，普通讨论保留。依赖平台原生 `project_case_upload` 及匹配 Core/Digest 版本，不创建工单或排班台账、不需要 Azure 凭据。交互验收见 [测试清单](case-summary-oncall-schedule/tests/cases.md)。
+
+### Case / On-call Skill 名称迁移
+
+规范名称和目录统一为 **`case-summary-oncall-schedule`**。旧的 `case-summery-oncall-schedule`、`case-summery` 和 `project-case-upload` 只作为历史部署/兼容标识，不是新的首选名称。
+
+GitHub 改名不等于平台已完成迁移：
+
+1. 先确认目标 Core 的 Skill 加载门禁允许规范名称，导入轮次追踪与日报会话排除也识别新名；迁移期间按需保留旧名兼容。
+2. 在目标平台受控验证后，将 Git Pack 固定到本次改名提交，更新 subset 为 `["case-summary-oncall-schedule"]`，导入并发布新 Skill；验收通过后才归档旧名。
+3. 验证完整读取新 Skill 后能调用原生工具并取得回执，且导入轮次仍不混入会话摘要。仅更改名称、合并 Git、Sync now 或复制文件不构成端到端验收。
+
+后端尚未支持新名称的已部署环境，应暂时保留已验证的旧 pack 提交和 Skill，不要直接切换。此次仓库改名不增加自动化导入权限，也不将用户附件校验改为接受 Loop 生成文件。
 
 ## 目标
 

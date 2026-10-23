@@ -1,5 +1,5 @@
 ---
-name: case-summery-oncall-schedule
+name: case-summary-oncall-schedule
 description: >-
   将当前项目用户上传的原始 .md Case 或 On-call 排班资料导入项目日报。
   用于保存 Case、排班或混合 Markdown 附件，以及回复“确认导入 <确认编号>”
@@ -65,6 +65,6 @@ description: >-
 - 若所属日期邮件已经生成，原日期报告页可查补充材料，不补发或改写旧邮件。
 - “已保存”不等于“已纳入邮件”或“已发送”；不承诺即时投递。
 
-旧 `case-summery` / `project-case-upload` 为兼容入口；会话应完整读取当前新 Skill。文件更新不等于平台已发布，目标 Scope 必须安装匹配后端的新版本。
+规范入口为 `case-summary-oncall-schedule`。旧 `case-summery-oncall-schedule` / `case-summery` / `project-case-upload` 是历史兼容标识，兼容性以目标后端实际支持为准。目标 Core 必须允许完整读取规范名称后的工具调用，并将新名称纳入导入轮次追踪及会话摘要排除；只在 GitHub 改名不等于平台已发布。后端未迁移时明确说明不兼容，不绕过校验。
 
 本 Skill 不建立逐 Case 或排班台账，不读取全部历史工单，也不改变日报的收件人、时间或发信授权。
