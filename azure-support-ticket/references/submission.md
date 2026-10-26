@@ -1,10 +1,12 @@
-# 专用环境的提交与恢复
+# 当前 Project 的提交与恢复
 
-仅在 `SKILL.md` 的执行隔离、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；全部 Azure 调用显式指定 subscription。身份优先使用运营方预配置或当前 Project memory 映射的 resident profile；缺少匹配 profile 时，只允许在专用 Support 环境执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配。
+仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。优先使用当前 Project 已有的 Azure CLI profile 或平台授权给本项目的凭据；缺少匹配 profile 时，在当前 Project 执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配，也不要求额外的执行环境绑定。
 
 ## 多租户身份发现与选择
 
-先从当前 Project memory 搜索目标 subscription ID、tenant ID、subscription 名称及 `azure-support-profile`。只接受当前 Project 或平台批准的 attached Support environment 所指向的 profile；来自其他 Project、Personal scope、历史聊天正文或无法确认作用域的路径不进入候选集。
+即使没有 memory 映射，也先检查当前 Project 进程使用的 Azure CLI profile：已设置 `AZURE_CONFIG_DIR` 时沿用该目录，否则使用当前项目 HOME 下的 `$HOME/.azure`。使用下述 `account list` 核验已有登录，不读取 token/cache 文件，不因缺少名为 Support 的环境或 profile 而拒绝。
+
+再从当前 Project memory 搜索目标 subscription ID、tenant ID、subscription 名称及 `azure-support-profile`，合并平台授权给当前 Project 的 resident profile。只接受本项目可用且获授权的来源；来自其他 Project、Personal scope、历史聊天正文或无法确认作用域的路径不进入候选集。平台提供的凭据入口按其既有认证工具使用，保持 secret 在工具/进程环境内，不将值放进命令、聊天、memory 或请求记录。只有原始凭据但尚未认证时，不能把 `account list` 为空当作无凭据；先使用本项目已授权的认证入口，再核验清单。
 
 推荐的非敏感 memory 记录格式为：
 
@@ -18,7 +20,7 @@ Memory 是路由提示。每个候选都必须使用其 `AZURE_CONFIG_DIR` 实�
 az account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
 ```
 
-执行器通过进程环境传入已批准的 `AZURE_CONFIG_DIR`，不把 profile 路径拼入用户可控的 shell 语法。不得读取、复制或输出目录内的 token/cache。对清单中每个候选 subscription，再执行 `account show --subscription <subscription-uuid>` 核验实时上下文。
+执行工具通过进程环境传入选中 profile 的 `AZURE_CONFIG_DIR`，不把 profile 路径拼入用户可控的 shell 语法。不得读取、复制或输出目录内的 token/cache。对清单中每个候选 subscription，再执行 `account show --subscription <subscription-uuid>` 核验实时上下文。
 
 向用户展示一张清单：
 
@@ -42,7 +44,7 @@ az account list --all --query '[].{tenant:tenantId,subscription:id,name:name,sta
 
 先让操作者提供或从受信任的订阅属性中取得目标 tenant UUID。tenant 未知时停止并引导其从 Azure Portal 的 Subscription properties 获取 Directory ID；不要通过 common/organizations 登录猜测 tenant。
 
-为该 tenant 使用运营方批准的持久目录；新目录推荐为：
+在当前 Project 的 HOME 中为该 tenant 使用持久目录；优先复用本项目匹配的 profile，新目录推荐为：
 
 ```text
 $HOME/.azure-support/profiles/<tenant-uuid>
@@ -73,7 +75,7 @@ az extension show --name support --query version --output tsv
 az account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
 ```
 
-上述命令与后续每条 Azure 命令都使用同一个选中 profile 环境。需要 Support extension 的 `in-subscription tickets` 命令。Azure CLI 文档要求 CLI 2.57.0 或更高；具体安装版本由专用执行器固定和维护。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。缺少 extension 时让运营方安装到选中 profile 或批准的共享 extension 目录，避免在写入步骤隐式动态安装。
+上述命令与后续每条 Azure 命令都使用同一个选中 profile 环境。需要 Support extension 的 `in-subscription tickets` 命令。Azure CLI 文档要求 CLI 2.57.0 或更高；具体安装版本由当前项目的工具安装流程维护。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。缺少 extension 时让运营方安装到选中 profile 或批准的共享 extension 目录，避免在写入步骤隐式动态安装。
 
 在读取分类前还要核验：
 
@@ -97,7 +99,7 @@ az support services problem-classifications list --subscription <subscription-uu
 
 优先使用执行工具的 argv 数组接口，设置 `shell=False`。如果工具只支持 shell，将每个动态参数分别做 POSIX shell 引用（可使用 Python `shlex.quote`）；引号、换行、反引号和 `$()` 均作为字面数据传递。不要用字符串替换拼接未经引用的命令。用户字段不能增加选项或改变固定命令前缀。
 
-完整复核记录和执行请求仅存放在专用环境的受控存储，联系人资料不写入 Git、公共日志或诊断 Scope。下述固定 `--query` 将读取结果限定为恢复和确认所需字段。
+完整复核记录和执行请求仅存放在当前 Project 的受控存储（目录 `0700`、文件 `0600`），联系人资料不写入 Git、公共日志或其他 Scope。下述固定 `--query` 将读取结果限定为恢复和确认所需字段。
 
 ## 提交前读取
 
@@ -105,13 +107,13 @@ az support services problem-classifications list --subscription <subscription-uu
 az support in-subscription tickets show --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --query '{id:id,name:name,caseId:supportTicketId,title:title,description:description,classification:problemClassificationId,status:status,severity:severity,created:createdDate}' --output json
 ```
 
-Support extension 的该命令会将 REST `properties` 展平，上述查询使用 CLI 顶层字段。专用环境升级 extension 时核对输出契约；任何必需字段缺失都不能当作成功。
+Support extension 的该命令会将 REST `properties` 展平，上述查询使用 CLI 顶层字段。当前项目升级 extension 时核对输出契约；任何必需字段缺失都不能当作成功。
 
 - 已存在：核对请求记录中的资源 ID、标题、描述和分类；匹配则复用，不创建。冲突则停止。
 - 明确的 Azure 资源不存在错误（404/`ResourceNotFound`，且指向该 ticket）：允许进入已确认的创建流程。
 - 403、401、订阅不存在、网络超时或其他错误：停止；这些错误不证明 ticket 不存在。
 
-专用执行器必须按 subscription 和稳定 ticket 名称串行化提交，避免两个请求同时通过“不存在”检查后重复创建。请求记录包含当前版本、确认状态和提交状态；确认不跨版本复用，恢复任务只读取原名称。
+在当前 Project 中按 subscription 和稳定 ticket 名称串行化提交，避免两个请求同时通过“不存在”检查后重复创建。使用平台已有请求锁，或当前项目持久存储上的进程间文件锁（如 `flock`），覆盖提交前读取、创建和提交后核验全过程；同项目所有会话必须使用同一锁路径。没有可靠锁时停在待提交并报告并发保护缺失，不能凭“当前只有一个任务”跳过。请求记录包含当前版本、确认状态和提交状态；确认不跨版本复用，恢复任务只读取原名称。锁和记录不要求另建执行环境。
 
 ## 技术、计费和订阅管理创建
 

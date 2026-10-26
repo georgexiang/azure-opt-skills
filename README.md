@@ -11,7 +11,7 @@
 
 主 `SKILL.md` 负责意图路由、工作流编排与安全约束。详细命令、阈值、输出模板与执行脚本仍作为同一 Skill 的内部资产保留。
 
-仓库另提供独立 `/azure-support-ticket`，用于在**与诊断 Sandbox 隔离的专用 Support 执行环境**中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
+仓库另提供独立 `/azure-support-ticket`，用于在**任何具备获授权 Azure 凭据和目标 Support 写权限的 Project** 中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID；直接在当前会话执行，不要求额外环境绑定。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
 
 另提供独立 [`/case-summary-oncall-schedule`](case-summary-oncall-schedule/SKILL.md)：将当前项目用户上传的原始 `.md` Case、On-call 排班或混合资料导入项目日报，分别展示 `Case Summary` 和 `On-call Schedule`。任一主题明确即可保存；没有明确主题但有疑义时请求真人确认，确认不等于核实不确定业务事实。仅使用报告日上传资料，排班列表突出报告日期、不自动跨日复用；导入轮次及回复不进入新版会话摘要，普通讨论保留。依赖平台原生 `project_case_upload` 及匹配 Core/Digest 版本，不创建工单或排班台账、不需要 Azure 凭据。交互验收见 [测试清单](case-summary-oncall-schedule/tests/cases.md)。
 
@@ -34,7 +34,7 @@ GitHub 改名不等于平台已完成迁移：
 3. 消除原有 Skills 中重复的 VM 查询、SKU 查询、时间转换与 Resource Health 查询。
 4. 去除对 Feishu、Microsoft Agent Framework 及源项目自定义 `run_az` 接口的运行时耦合。
 5. 与 QM 的 Scope、Sandbox、凭据体系、Skill 物化与 Web UI 展示集成。
-6. 仅允许只读 Azure 操作；可生成 Support 工单草稿，但不在通用 Sandbox 中直接提交。
+6. `azure-ops` 仅执行只读 Azure 操作并生成草稿；实际提交由独立 `azure-support-ticket` 在当前 Project 核验权限和用户确认后执行。
 7. 让该 Skill 在 QM Web UI 的 Skills 页面与 `/` 命令选择器中可见。
 
 ## 非目标
@@ -128,15 +128,15 @@ https://github.com/georgexiang/azure-opt-skills
 
 注册后选择 `Browse skills...`，并将 `azure-ops` 导入目标 Scope。仓库更新后使用 `Sync now`。无需构建或替换 Sandbox 镜像。
 
-如需实际提交，另行导入 `azure-support-ticket` bundle（包含 `SKILL.md`、`references/submission.md` 和 `tests/cases.md`）。该 bundle 不依赖另一个 Skill 的文件路径，也不内置认证或安装脚本；专用执行环境的 Azure CLI、Support extension、独立认证和允许目标由运营方配置。普通 QM Scope 导入它并不会获得写入能力。
+如需实际提交，另行导入 `azure-support-ticket` bundle（包含 `SKILL.md`、`references/submission.md` 和 `tests/cases.md`）。该 bundle 不依赖另一个 Skill 的文件路径，也不内置认证或安装脚本；使用当前 Project 的 Azure CLI、Support extension 和获授权凭据。当前项目已有匹配的 Azure CLI 登录即可核验并继续，无需额外环境绑定或 memory 映射。缺少身份时可按 Skill 在当前项目执行 tenant-specific device-code 登录；导入 Skill 本身不授予 Azure 权限。
 
 ### 多租户 Support 提交流程
 
 `azure-support-ticket` 将 Project 视为多租户、多订阅执行环境，而不是把当前 Azure CLI 默认订阅当作提交目标：
 
-1. 用用户提供的 tenant、subscription ID 或名称搜索 Project memory 中的非敏感 Support profile 映射。
+1. 先检查当前 Project 的 Azure CLI profile，再用目标信息搜索 Project memory 中的非敏感 Support profile 映射；没有映射也检查已有登录。
 2. 实时核验每个候选 profile，并在提交前展示当前 Project 可访问的 tenant/subscription 清单及本次选中项。
-3. 目标 subscription 没有匹配身份时，先取得正确 tenant ID，再在专用环境中执行显式 `--tenant` 的 device-code 登录。
+3. 目标 subscription 没有匹配身份时，先取得正确 tenant ID，再在当前 Project 中执行显式 `--tenant` 的 device-code 登录。
 4. 登录后固定目标 subscription，重新核验清单、Support extension、provider、服务目录和可读取的写入权限。
 5. 仅保存 tenant/subscription/profile 路由信息；认证材料留在批准的 resident profile 中。
 
@@ -144,7 +144,7 @@ https://github.com/georgexiang/azure-opt-skills
 
 - 单租户假设使 Agent 只检查默认订阅，并把“目标订阅不可见”误认为整个 Environment 没有身份。
 - device-code 登录落入 common/organizations 路径，触发 Conditional Access；明确 tenant 的同类登录可以走正确策略。
-- 隔离 profile 登录成功，但提交 conversation 没有选择它，因而继续使用旧订阅。
+- Project profile 登录成功，但提交 conversation 没有选择它，因而继续使用旧订阅。
 - Environment attachment、resident credential、Keychain grant 和 Project memory 被误认为同一个授权面。
 - Memory 因 attachment 写入其他 scope 或无法回读，却被错误宣称为可供后续 conversation 自动使用。
 
@@ -196,10 +196,10 @@ QM Local Sandbox 会将整个 `$HOME` 存储到 Scope 专属卷中，因此安�
 1. 由操作人员为目标 Scope 配置 Azure 身份。不要通过聊天发送密钥、证书或令牌。
 2. 每次操作先校验当前租户、订阅与调用身份。
 3. Azure CLI 使用 `$HOME/.azure` 作为缓存目录，QM 会按 Scope 进行捕获与恢复。
-4. 通过 Azure RBAC 将身份保持为只读；尽量使用专用 service principal。
+4. `azure-ops` 诊断身份通过 Azure RBAC 保持只读；独立提交 Skill 的身份需要目标 Support 写权限。
 5. 出网策略需允许 Azure 登录、ARM、PyPI 及 Azure CLI extension 下载端点。
 
-Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命令别名绕过。生产环境优先使用 service principal 或 managed identity。仅在 Conditional Access 允许时，才可用 Device Code 进行临时交互式登录。
+Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目标 Support 权限授权，不能通过命令别名绕过。生产环境优先使用 service principal 或 managed identity。仅在 Conditional Access 允许时，才可用 Device Code 进行临时交互式登录。
 
 对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员可以通过 **Admin → Shared service credentials → Env delivery** 配置 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID` 和 `AZURE_OPS_CLIENT_CERTIFICATE_PEM`。Guard 只接受完整的三项组合，并使用临时 `0600` PEM完成固定的 certificate login；它不会开放任意 `az login`，也不会把 PEM转发给读取命令。此模式必须配合 tenant root management group 或目标 subscriptions 上的 Reader RBAC，不能授予写角色。
 
@@ -218,7 +218,7 @@ Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命
 | 身份         | 用途                                                              | 权限原则                                   |
 | ------------ | ----------------------------------------------------------------- | ------------------------------------------ |
 | 诊断身份     | VM、Monitor、Resource Health、Service Health、Resource Graph 读取 | 只读与最小权限                             |
-| Support 提交 | 与诊断 Sandbox 隔离的专用执行环境；通用 Sandbox 中不配置             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
+| Support 提交 | 当前 Project 中获授权的 Azure 凭据；不要求单独环境             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
 
 独立 `/azure-support-ticket` 的实际提交流程是：搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
@@ -236,7 +236,7 @@ Azure RBAC 必须确保身份只读。这是最终授权边界，不能通过命
 - 对 stdout 与 stderr 中的敏感信息进行脱敏。
 - 返回结构化 JSON 错误，避免模型从含糊文本中推断结果。
 
-Azure Support 分支仅查询 Service 与 Problem Classification 值并生成草稿。通用 Local Sandbox 无法提供不可绕过的跨轮次写确认，也无法阻止任意进程访问挂载的写权限身份，因此绝不自动执行工单创建命令。用户需通过 Azure Portal 或组织批准的外部自动化流程提交工单。
+`azure-ops` 的 Azure Support 分支仅查询分类并生成草稿，guard 仍拒绝创建。实际提交切换到独立 `azure-support-ticket` Skill，在当前 Project 使用获授权凭据执行固定 Support 命令，逐次确认、共享锁查重并核验 case ID。Skill 确认是工作流约束，不宣称为不可绕过的沙箱安全边界；工具授权、凭据作用域和 Azure RBAC 仍由平台及 Azure 强制。
 
 ## 实施阶段
 
@@ -273,7 +273,7 @@ Azure Support 分支仅查询 Service 与 Problem Classification 值并生成草
 - 运行静态校验、安全测试与意图路由测试。
 - 使用真实只读 Azure 查询完成冒烟测试。
 - 验证 Personal 与 Project Scope 间的凭据与资源隔离。
-- 验证 Support 工单始终为草稿，且所有创建命令均被拒绝。
+- 验证诊断 guard 拒绝创建；独立提交 Skill 在有权限的普通 Project 中可完成确认、创建与核验。
 - 根据测试结果优化说明并减少重复查询。
 
 交付物：验收记录、已知限制与发布建议。
@@ -302,7 +302,7 @@ Azure Support 分支仅查询 Service 与 Problem Classification 值并生成草
 - 任意 ARM 写操作、外部 URL、输入文件与 shell 注入尝试会被拒绝。
 - 日志与报告中不包含令牌、密钥或证书私钥。
 - 通用诊断身份不能创建或修改 Azure 资源。
-- 该 Skill 与通用 Sandbox 不能创建 Support 工单。
+- `azure-ops` 及其 guard 不创建工单；独立提交 Skill 仅在当前 Project 获授权且用户确认后创建。
 - Azure 凭据不能跨 QM Scope 复用。
 
 ## 测试场景

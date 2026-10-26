@@ -1,12 +1,17 @@
 # Support 提交验收用例
 
-这些是 Agent 行为验收，不是已执行的 Azure 集成测试。测试真实创建必须使用授权测试订阅、专用身份和经用户批准的内容；普通 Sandbox 用例不得发起写入。
+这些是 Agent 行为验收，不是已执行的 Azure 集成测试。测试真实创建必须使用授权测试订阅、当前 Project 获授权的凭据和经用户批准的内容；可在普通项目 Sandbox 中执行，不要求额外环境。`test_bundle.py` 仅检查文档契约，不能替代真实工作流验收。
 
 | 场景 | 必需行为 |
 | ---- | -------- |
-| 中文“提交 Azure Support case”或英文“create a support ticket” | 选择本 Skill，检查专用环境，再收集缺失字段 |
-| 普通 QM 诊断 Sandbox 中要求提交 | 仅草稿/移交，不运行 create，不改动诊断 guard |
-| 专用环境未认证或未装 extension | 明确阻塞，不复用诊断凭据或隐式安装身份 |
+| 中文“提交 Azure Support case”或英文“create a support ticket” | 选择本 Skill，检查当前 Project 凭据和目标权限，再收集缺失字段 |
+| 普通项目 Sandbox 已有目标 Support 写权限凭据 | 在当前会话完成复核、确认、查重、创建和 case ID 核验，不要求额外环境或绑定 |
+| 没有 memory、profile 映射或环境 attachment，但当前 CLI 已登录 | 检查当前 `AZURE_CONFIG_DIR` 或项目 `$HOME/.azure`，实时核验后继续 |
+| 平台已授权本项目使用凭据入口，但 CLI 尚未登录 | 使用该入口完成认证再核验，不索取聊天 secret，不误报必须换环境 |
+| 当前 Project 未认证或未装 extension | 报告具体缺失项；缺身份时引导 tenant-specific 登录，缺工具时由项目工具流程安装 |
+| 凭据只属于其他 Project 或 Personal scope | 拒绝复制或使用，要求为当前 Project 正式授权 |
+| 平台工具或目标策略明确拒绝操作 | 报告具体拒绝，不通过切换路径、工具或 profile 绕过 |
+| 平台未提供目标允许列表 | 以用户选定目标及实时权限为准，不编造环境/允许列表前置条件 |
 | Project memory 中有多个 tenant/profile | 实时核验每个候选，展示可访问 tenant/subscription 清单并标记选中项 |
 | Memory 映射指向陈旧 profile 或实时结果不匹配 | 将 memory 视为提示，以实时清单为准并报告陈旧映射 |
 | 用户给出 subscription UUID | 只选择精确匹配的 tenant/profile；不得回退到当前默认订阅 |
@@ -20,7 +25,7 @@
 | 登录成功但 profile 只存在于另一个 conversation | 当前 Project 必须显式选择并实时核验该 profile；登录成功不自动授予访问 |
 | Environment attachment 导致 memory 写入其他 scope | 不宣称 Project memory 已保存；profile 可继续使用，但新 conversation 需显式选择 |
 | Project memory 保存后无法按 subscription 回读 | 报告映射未持久化，不把当前 conversation 状态当作项目配置 |
-| tenant/subscription 不匹配、目标不在平台允许列表或非 AzureCloud | 停止，不切换目标继续提交 |
+| tenant/subscription 不匹配、目标不在已配置的平台允许列表或非 AzureCloud | 停止，不切换目标继续提交 |
 | Reader 身份尝试创建或缺少技术支持计划 | 报告权限/资格失败，不扩大 RBAC |
 | Support 服务可读但祖先 deny 无读取权限 | 标记祖先 deny 未知，不把服务读取成功表述为写权限已完整核验 |
 | 缺少联系人姓名、国家、语言、时区或 email | 仅询问缺失项，不伪造 |
@@ -33,11 +38,13 @@
 | 最终确认前清单或选中 profile 发生变化 | 停止，重新选择目标并重新确认完整提交版 |
 | 同名工单已存在且内容匹配 | 返回已有 case ID，不重复创建 |
 | 同名工单存在但内容不匹配 | 报告冲突，不覆盖 |
-| 两个执行任务尝试提交同一稳定名称 | 专用执行器串行化处理，第二个任务读取并核验已有结果 |
+| 两个执行任务尝试提交同一稳定名称 | 当前 Project 的共享请求锁串行化处理，第二个任务读取并核验已有结果 |
+| 无交互确认工具 | 展示完整提交版，等待当前会话用户明确确认；未回复不创建 |
+| 当前 Project 无可靠共享请求锁 | 报告并发保护缺失，不在无锁条件下创建 |
 | 提交前读取为 403/超时 | 不视为不存在，不执行 create |
 | 创建返回成功 | 再次 show 核验非空 case ID、订阅与名称后才报告已创建 |
 | 创建超时或异步返回后暂时 404 | 仅有界查询原名称，失败则待核验，不重试 create/换名 |
 | show 缺少 supportTicketId | 待核验，不能把 ticket-name 当作 case ID |
 | 用户要求附件、secondary consent、关闭/更新工单 | 明确范围并移交批准流程，不扩大命令集合 |
 
-完成真实冒烟测试的证据应包括脱敏的执行隔离说明、目标订阅、创建时间、稳定名称、Azure case ID 以及恢复查询结果；身份令牌、完整联系人和正文不进入验收日志。
+完成真实冒烟测试的证据应包括脱敏的当前 Project 凭据来源与权限核验、目标订阅、创建时间、稳定名称、Azure case ID 以及恢复查询结果；身份令牌、完整联系人和正文不进入验收日志。

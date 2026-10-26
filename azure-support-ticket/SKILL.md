@@ -1,10 +1,10 @@
 ---
 name: azure-support-ticket
 description: >-
-  在与诊断 Sandbox 隔离的专用 Support 执行环境中，经用户确认后实际提交 Azure Support
-  ticket/case。适用于多租户、多订阅 Project 中发现并选择已批准身份，缺少匹配身份时执行
+  在任何具有可用 Azure 凭据和目标订阅 Support 写权限的 Project 中，经用户确认后实际提交
+  Azure Support ticket/case。适用于发现多租户、多订阅凭据、缺少匹配身份时执行
   tenant-specific device-code 登录，以及创建技术支持、计费、订阅管理或配额工单并核验 case ID。
-  支持中文和英文；普通 QM Sandbox 中仅准备草稿并移交授权执行环境。
+  支持中文和英文，直接在当前 Project 会话执行，不要求额外的执行环境绑定。
 requiredCapabilities:
   - egress:login.microsoftonline.com
   - egress:management.azure.com
@@ -18,19 +18,20 @@ requiredCapabilities:
 
 这是独立的写入 Skill，不扩展 `azure-ops` 的只读 guard。
 
-- 实际提交仅在运营方批准的专用 Support 执行环境中进行。该环境必须使用独立身份、Azure CLI 配置目录和凭据存储，与通用 QM 诊断 Sandbox 隔离；隔离由平台强制，不依赖提示词、目录名称或环境变量开关。
-- 执行身份在目标订阅上使用 `Support Request Contributor`，或经过审核的最小权限自定义角色。无需授予资源 `Contributor` 或 `Owner`。角色配置由运营方完成，Skill 不执行角色分配。
-- 普通 QM Sandbox、只有诊断 Reader 身份、或无法确认平台隔离时，停在草稿并移交专用环境或 Azure Portal。不得复制诊断登录缓存、复用 `AZURE_OPS_*` 共享凭据或尝试绕过 `az_guard.py`。
-- 专用环境中仅调用下述固定 Azure CLI 命令：认证上下文读取、服务和分类读取、本次 ticket 的读取和创建。更新、关闭工单、发送后续通信和修改 Azure 资源不在本 Skill 范围内。
+- 直接使用当前 Project 会话可用且获授权使用的 Azure 凭据；普通项目 Sandbox 可执行提交。执行资格取决于凭据、目标权限和本次确认，而不是环境名称、attachment 或单独执行器的存在。
+- 执行身份在目标订阅上需要 `Microsoft.Support/supportTickets/write`，通常使用 `Support Request Contributor` 或经过审核的最小权限自定义角色。已有身份具备该权限即可，无需换身份或授予资源 `Contributor` / `Owner`。角色配置由运营方完成，Skill 不执行角色分配。
+- 仅使用当前 Project 已有或经平台授权提供给该 Project 的凭据，不搜索或复制其他 Project、Personal scope 的 token/cache。不把只读 `AZURE_OPS_*` 共享诊断身份升级或转换为写入身份。
+- 本 Skill 通过 Azure CLI 直接执行 reference 列出的认证、上下文读取、服务和分类读取、本次 ticket 的读取和创建；`azure-ops` 的 guard 仍只用于诊断，不向其增加写命令。平台的工具、出网、凭据授权和目标限制仍然有效；真实被拒绝时报告具体限制，不绕过。
+- 更新、关闭工单、发送后续通信和修改 Azure 资源不在本 Skill 范围内。
 - 用户明确要求提交仍需复核完整内容；诊断请求、草稿请求和历史确认均不构成本次写入授权。
 
 ## 工作流
 
 ### 1. 发现身份、展示范围并选择目标
 
-先完整阅读 [提交命令与恢复流程](references/submission.md)。确认平台提供了上述隔离条件，且运营方已安装 Azure CLI。缺少工具时明确报告阻塞项；不在诊断 Sandbox 中安装写入身份，不索取聊天中的密码、令牌或证书。
+先完整阅读 [提交命令与恢复流程](references/submission.md)。检查当前 Project 的 Azure CLI 和凭据；缺少工具时明确报告实际阻塞项，不索取聊天中的密码、令牌或证书。
 
-这是多租户、多订阅 Project。先用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，再合并平台批准的当前 resident profile 和执行器绑定。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
+这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
 
 按 reference 逐个核验候选 profile，汇总当前 Project 实际可访问的 tenant 和 subscription。开始分类或提交前向用户展示：
 
@@ -41,13 +42,13 @@ requiredCapabilities:
 
 用户给出 subscription ID 时只允许精确匹配；只给名称而存在多个匹配时要求选择；未给目标时让用户从已核验列表中选择。不得因当前默认订阅可用而替代用户目标，也不得把登录成功等同于拥有 Support 写权限。
 
-没有匹配 profile 时，先取得并复核目标 tenant UUID。仅在已批准的专用 Support 环境中，按 reference 使用新的持久 profile 执行一次显式包含 `--tenant <tenant-uuid>` 的 device-code 登录；不得退回 common/organizations 登录来猜 tenant。登录后固定目标 subscription、重新生成完整清单，并再次展示选中项。将非敏感映射写入当前 Project memory 时必须回读确认作用域和内容；如果 attachment 将 memory 写入其他 scope 或回读失败，明确报告未持久化，不宣称后续 conversation 会自动选择。
+没有匹配 profile 时，先取得并复核目标 tenant UUID。在当前 Project 中，按 reference 使用本项目的持久 profile 执行一次显式包含 `--tenant <tenant-uuid>` 的 device-code 登录；不得退回 common/organizations 登录来猜 tenant。登录后固定目标 subscription、重新生成完整清单，并再次展示选中项。将非敏感映射写入当前 Project memory 时必须回读确认作用域和内容；如果 attachment 将 memory 写入其他 scope 或回读失败，明确报告未持久化，不宣称后续 conversation 会自动选择。
 
-使用 reference 中的 `account show` 命令读取选中订阅，返回的 tenant、subscription、cloud 和状态必须与用户目标及平台允许列表一致；任一不一致就停止。只支持 `AzureCloud` 公有云、订阅内工单；其他云和 CSP 跨租户代提交移交相应批准流程。核验 Support extension、`Microsoft.Support` provider、服务目录以及身份返回的 `Microsoft.Support/supportTickets/write` 权限；无法读取祖先 deny 时标为未知，不能伪装成通过。
+使用 reference 中的 `account show` 命令读取选中订阅，返回的 tenant、subscription、cloud 和状态必须与用户目标一致；平台若提供目标允许列表，也必须满足它，配置缺失或非法时按平台契约停止，全部未配置时不凭空要求允许列表。任一已配置限制不满足就停止。只支持 `AzureCloud` 公有云、订阅内工单；其他云和 CSP 跨租户代提交移交相应批准流程。核验 Support extension、`Microsoft.Support` provider、服务目录以及身份返回的 `Microsoft.Support/supportTickets/write` 权限；无法读取祖先 deny 时标为未知，不能伪装成通过。
 
 技术支持通常需要有效支持计划；计费和订阅管理等请求也受 Azure 的权限及资格规则约束。遇到计划、权限或服务可用性错误，报告具体阻塞原因，不自动扩大权限或降级严重程度。
 
-完成条件：执行隔离已确认；可访问清单和选中项已展示；选中 profile 的 tenant/subscription/cloud/state、Support 工具和可读取权限已核验；缺失或未知项已显式列出。
+完成条件：当前 Project 的凭据来源已确认；可访问清单和选中项已展示；选中 profile 的 tenant/subscription/cloud/state、Support 工具和可读取权限已核验；缺失或未知项已显式列出。
 
 ### 2. 收集内容并解析分类
 
@@ -78,9 +79,9 @@ requiredCapabilities:
 
 再次展示当前 Project 可访问的 tenant/subscription 清单并突出本次选中项；清单与步骤 1 不一致时停止并重新选择。随后展示：选中 profile label、目标 tenant/subscription、工单资源名称、服务和分类显示名及 ID、完整标题/描述、严重程度、全部联系方式、技术资源或配额详情、诊断授权及 24×7 选项。明确告知内容和联系人资料将发送给 Microsoft Support。
 
-使用交互确认工具要求用户明确批准这一版内容。取消或拒绝时停止；确认后字段、目标或授权发生变化时重新复核并确认。确认仅允许在专用 Support 环境执行一次创建；聊天确认不替代平台授权。
+使用交互确认工具要求用户明确批准这一版内容；没有该工具时，在当前会话展示完整内容并等待用户明确回复确认。取消、拒绝或尚未回复时停止；确认后字段、目标、身份或授权发生变化时重新复核并确认。确认仅允许使用选中凭据对该目标执行一次创建，不授予额外的平台或 Azure 权限。
 
-完成条件：用户已批准当前完整内容，且稳定的 ticket 名称已保存到该专用执行环境的受控请求记录。
+完成条件：用户已批准当前完整内容，且稳定的 ticket 名称、版本和提交状态已保存到当前 Project 的受控请求记录。
 
 ### 4. 创建并核验
 

@@ -2,7 +2,7 @@
 
 当用户提出要起草、开启、创建或提交 Azure 技术支持工单时，使用本流程。
 
-该 QM Skill 会准备完整工单，但不会提交。通用 Local Sandbox 无法可靠地强制跨轮次写入确认，也无法保证 Support 写入身份对任意进程不可访问。用户必须在本 Sandbox 之外，通过 Azure Portal 或由运维方管理的流程审核并提交草稿。
+`azure-ops` 会准备完整工单，但不通过诊断 guard 提交。用户要求实际提交时，在当前会话使用独立的 `azure-support-ticket` Skill：它可在任何具备获授权 Azure 凭据和目标 Support 写权限的 Project 中执行，不要求更换 Sandbox 或绑定额外环境。未导入该 Skill 时使用 Azure Portal 或组织批准的流程。
 
 ## 收集用户提供事实
 
@@ -65,4 +65,4 @@ support services problem-classifications list --service-name <service-name> -o j
 技术资源: <verified resource ID when available>
 ```
 
-不要构造或执行 `support in-subscription tickets create`。当用户要求继续时，需明确说明该 QM Skill 有意禁用自动 Support 提交。若运营方已导入独立的 `azure-support-ticket` Skill，则将已确认的非凭据事实移交给它；实际执行必须在平台强制隔离的专用 Support 环境中完成，并由该 Skill 补齐 CLI 必填联系人字段、核验目标并重新确认提交。否则，引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 的受控存储以便授权运维人员使用。
+本诊断分支不构造或执行 `support in-subscription tickets create`。用户要求继续时，将已确认的非凭据事实交给独立的 `azure-support-ticket` Skill；由它在当前 Project 核验凭据与目标权限、补齐 CLI 必填联系人字段并重新确认提交。该流程直接使用 Azure CLI 的固定 Support 命令，不修改诊断 guard。若未导入提交 Skill，引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 的受控存储以便授权运维人员使用。
