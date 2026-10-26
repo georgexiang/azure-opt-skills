@@ -12,6 +12,16 @@
 - 批准后重新读取 grant 的 audience/status/expiry/purpose，优先按当前 Keychain manifest 定义的 use 命令在当前项目加载凭据。`POST /v1/keychain/use`（`{grant}`）返回的是含敏感材料的 shell 初始化脚本，发出 POST 本身不等于已加载：将响应写入权限为 `0600` 的临时文件，在同一 shell 中 source 后执行所需 Azure 命令，最后清理临时脚本；不显示、读取到聊天、记录日志或启用 shell tracing。不要预先单独调用 use 来试探一次性 grant，以免消耗授权却未使用。每次 Azure 命令使用相同选中 profile，核验实际 account 上下文。遇到 use 拒绝时报告实际拒绝，不换 profile 绕过。
 - 旧聊天结论和 Memory 中的环境名称只是历史上下文，不是当前授权证明。授权已经更新时以实时元数据为准，重新加载当前 Skill 和 reference，不沿用之前的拒绝结论。报告必须区分“待凭据用途审批”“平台加载拒绝”和“Azure 权限/计划失败”，不能统称为缺少执行环境。
 
+### 持续凭据授权与工单确认
+
+用户说“永久授权”“一直允许”“后续不用重复授权”时，`POST /v1/keychain/asks` 必须使用 `requestedMode: "standing"`，不向申请或最终 grant 添加人为指定的到期时间。平台默认的审批申请 TTL 只限制审批窗口，不等于批准后的持续 grant 到期。向所有者解释：持续授权直到撤销，仅限当前 Project 和明确选定的订阅，允许读取认证上下文、Support 分类与工单、诊断失败，以及提交每次经用户确认的 Support 工单；不允许修改 Azure 资源、RBAC 或在其他 Project 使用。
+
+持续授权的 purpose 应描述上述长期工作范围，不写成“仅本工单”“最多一次创建”或“只重试一次”；否则即使模式是 standing，也不能宣称可用于之后的工单。已存在有效、匹配用途的 standing grant 时直接复用，不再请求一次性 grant。用户明确要求一次性时才申请 once。
+
+所有者批准后核验返回的实际 grant：`mode == "standing"`、`status == "active"`、audience 为当前 Project、purpose 覆盖目标订阅和 Support 工作流、`expiresAt` 未设置。所有者若选择 once，明确说明尚未取得所要求的持续授权，不把它升级或伪装成 standing。原有 pending ask 的冻结 purpose 仅覆盖一次尝试时，先请所有者拒绝/处理旧申请，再在原请求来源发起长期用途的 standing 申请；不能修改原 ask、换来源绕过去重或替所有者审批。若旧申请的 purpose 已覆盖长期用途，所有者可选择 Always/持续允许，最终以返回 grant 为准。
+
+持续 grant 不保证 Azure 登录令牌、凭据本身或 RBAC 永久有效；认证过期仍须重新认证，grant 被撤销或凭据失效时停止。每张新工单以及已确认正文、目标、分类、严重程度或联系人发生变化时，仍需用户确认。明确的参数拒绝不消耗 standing grant；在相同名称下确认未创建、定位并修正字段且用户重新确认后，可执行一次纠正尝试，不重新申请凭据授权。超时、网络中断或创建后 404 等不确定结果仍只恢复查询。
+
 ## 多租户身份发现与选择
 
 即使没有 memory 映射，也先检查当前 Project 进程使用的 Azure CLI profile：已设置 `AZURE_CONFIG_DIR` 时沿用该目录，否则使用当前项目 HOME 下的 `$HOME/.azure`。使用下述 `account list` 核验已有登录，不读取 token/cache 文件，不因缺少名为 Support 的环境或 profile 而拒绝。
@@ -162,4 +172,18 @@ az support in-subscription tickets create --subscription <subscription-uuid> --t
 
 状态恢复重新执行相同 `show`。已有匹配的工单返回“已存在并核验”；仍无可验证结果时移交运营方核对。只有运营方核实原请求未创建、用户再次确认之后，才允许重新发起创建。
 
-收到服务错误时保留脱敏后的 Azure 错误代码、故障类别及适用的 correlation/request ID；不向用户输出完整认证 stderr、联系人资料或请求正文。403 指向 RBAC，技术支持计划不满足指向订阅资格，分类失效则重新查询分类并重新确认；不要静默切换订阅、严重程度或诊断授权。
+### 参数错误证据与纠正
+
+创建调用的 stderr 必须先捕获到当前 Project 的私有临时文件（目录 `0700`、文件 `0600`），不要在工具输出中直接显示或使用 `--debug` 暴露完整请求。CLI 退出后保留退出码；提交进程释放该请求的文件锁后，用同一 Skill 的 helper 将脱敏证据合并到稳定名称对应的请求记录：
+
+```text
+python3 skills/azure-support-ticket/scripts/capture_azure_error.py --record <controlled-request-record.json> --error-file <private-stderr-file> --attempt-time <recorded-attempt-time>
+```
+
+helper 只处理本地错误证据，不调用 Azure、不加载凭据、不创建或重试工单。它自行获取同一 `.json.lock` 文件锁，并校验 `attemptTime` 仍属于本次调用，避免旧错误覆盖新尝试；不要在持有该锁的进程内等待这个独立命令。成功持久化并回读 `lastError` 后清理原始 stderr 临时文件，异常时将原始文件保留在受控存储用于恢复，不复制到聊天或 Git。错误记录应包含 `code`、脱敏 `message`、`target`、嵌套 `details`（若服务提供）及适用的 request/correlation ID，而不是只保存 `InvalidParameterValue`。
+
+若历史记录只有错误码，先检查该请求既有的私有日志/响应证据；缺少详细信息时明确标记 `detailsMissing`，不能猜测时区、国家、语言或资源字段，也不能再创建一次仅为了获得错误。可在有效且用途匹配的 standing grant 下执行范围内的只读诊断；缺少该授权才请求所有者批准持续用途。
+
+确认服务指出的字段后，按当前 CLI/API 官方契约核验并展示具体修正：联系人 country 使用 ISO 3166-1 alpha-3（如 `CHN`），支持语言使用 API 列表（如 `zh-hans`），时区使用 Windows 时区名称（如 `China Standard Time`）；这三个示例本身是有效格式，不应仅凭错误码修改。检查目标 tenant/subscription、完整服务/分类路径、技术资源 ID 和 UTC 开始时间，不伪造有效值。
+
+明确的请求拒绝、相同名称的权威查重结果及纠正内容均已记录且用户重新确认后，才允许下一次创建；不确定结果按前述恢复流程停止。403 指向权限或策略限制，不自动扩大 RBAC；技术支持计划不满足指向订阅资格，分类失效则重新查询并重新确认。不要静默切换订阅、严重程度或诊断授权。

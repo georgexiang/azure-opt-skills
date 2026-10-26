@@ -1,4 +1,5 @@
 """Documentation contract checks; these do not execute Azure or prove agent behavior."""
+
 import re
 import unittest
 from pathlib import Path
@@ -18,7 +19,9 @@ class SupportBundleTests(unittest.TestCase):
         ):
             text = (ROOT / relative).read_text()
             with self.subTest(path=relative):
-                self.assertNotRegex(text, r"专用 Support|专用执行环境|专用执行器|专用环境|执行隔离")
+                self.assertNotRegex(
+                    text, r"专用 Support|专用执行环境|专用执行器|专用环境|执行隔离"
+                )
                 self.assertNotIn("xiaomi-europe-support", text)
 
     def test_current_project_credentials_are_discovered_without_memory(self):
@@ -31,8 +34,13 @@ class SupportBundleTests(unittest.TestCase):
     def test_submission_retains_confirmation_and_recovery(self):
         text = (ROOT / "azure-support-ticket/SKILL.md").read_text()
         for required in (
-            "Support Request Contributor", "重新复核并确认", "稳定", "supportTicketId",
-            "只有确认 Azure 返回该资源不存在", "不盲目重复创建", "其他 Project",
+            "Support Request Contributor",
+            "重新复核并确认",
+            "稳定",
+            "supportTicketId",
+            "只有确认 Azure 返回该资源不存在",
+            "不盲目重复创建",
+            "其他 Project",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
@@ -42,21 +50,54 @@ class SupportBundleTests(unittest.TestCase):
         self.assertIn("串行化", reference)
         self.assertIn("shell=False", reference)
 
-    def test_restricted_grant_requests_owner_approval_instead_of_environment_switch(self):
+    def test_restricted_grant_requests_owner_approval_instead_of_environment_switch(
+        self,
+    ):
         text = (ROOT / "azure-support-ticket/references/submission.md").read_text()
         for required in (
-            "purpose", "audience", "POST /v1/keychain/asks", "pending ask",
-            "等待所有者审批", "不要修改授权记录", "POST /v1/keychain/use",
-            "历史上下文", "待凭据用途审批",
+            "purpose",
+            "audience",
+            "POST /v1/keychain/asks",
+            "pending ask",
+            "等待所有者审批",
+            "不要修改授权记录",
+            "POST /v1/keychain/use",
+            "历史上下文",
+            "待凭据用途审批",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
+
+    def test_standing_grants_and_parameter_evidence_are_explicit(self):
+        text = (ROOT / "azure-support-ticket/references/submission.md").read_text()
+        for required in (
+            'requestedMode: "standing"',
+            'mode == "standing"',
+            'status == "active"',
+            "expiresAt",
+            "直到撤销",
+            "长期工作范围",
+            "不重新申请凭据授权",
+            "capture_azure_error.py",
+            "lastError",
+            "detailsMissing",
+            "释放",
+            "ISO 3166-1 alpha-3",
+            "这三个示例本身是有效格式",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+        self.assertTrue(
+            (ROOT / "azure-support-ticket/scripts/capture_azure_error.py").is_file()
+        )
 
     def test_bundle_links_exist(self):
         for path in (ROOT / "azure-support-ticket").rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):
                 if "://" not in target and not target.startswith("#"):
-                    self.assertTrue((path.parent / target.split("#")[0]).is_file(), target)
+                    self.assertTrue(
+                        (path.parent / target.split("#")[0]).is_file(), target
+                    )
 
 
 if __name__ == "__main__":

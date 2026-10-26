@@ -220,6 +220,10 @@ Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目
 | 诊断身份     | VM、Monitor、Resource Health、Service Health、Resource Graph 读取 | 只读与最小权限                             |
 | Support 提交 | 当前 Project 中获授权的 Azure 凭据；不要求单独环境             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
 
+用户要求“永久授权”时，`azure-support-ticket` 请求由凭据所有者批准 **standing（持续到撤销）** 的项目内 Support 用途，核验实际 grant 的模式、作用域、长期用途及未设置到期时间；不将一次性 grant、审批卡片 TTL 或 Azure 登录令牌有效期混为一谈。有效的持续授权可用于后续范围内的诊断与提交，不为每次失败重新申请 once；每张工单及实质内容修改仍需用户确认。冻结用途仅允许一次尝试的旧 pending 申请，应由所有者先处理，再申请长期用途，不能改写或绕过。
+
+参数错误通过 bundle 内的 `scripts/capture_azure_error.py` 保留脱敏的 message、target、details 与请求标识；helper 仅处理本地错误记录，不调用 Azure。历史错误只有代码时明确证据不足，不猜字段或盲目重试。
+
 独立 `/azure-support-ticket` 的实际提交流程是：搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
 ## Azure CLI 安全层

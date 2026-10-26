@@ -49,6 +49,14 @@
 | 创建返回成功 | 再次 show 核验非空 case ID、订阅与名称后才报告已创建 |
 | 创建超时或异步返回后暂时 404 | 仅有界查询原名称，失败则待核验，不重试 create/换名 |
 | show 缺少 supportTicketId | 待核验，不能把 ticket-name 当作 case ID |
+| 用户要求永久/持续授权 | 申请 requestedMode=standing，长期用途限当前 Project/选定订阅，不添加 grant expiresAt；经所有者批准并核验实际模式后才宣称持续授权 |
+| 已有有效且覆盖 Support 工作流的 standing grant | 直接复用它进行核验、诊断及确认后的提交，不为每个 CLI 调用或失败再次申请 once |
+| 用户要求持续授权但所有者实际选择 once | 报告模式不符，不把一次性授权当作永久授权 |
+| pending ask 的 purpose 只允许最多一次尝试 | 请所有者处理旧申请后，在原来源请求长期用途；不改写 ask、不绕过去重 |
+| standing grant 的凭据过期、授权撤销或 Azure RBAC 改变 | 停止并报告真实原因；持续授权不等于令牌永不过期或自动扩大角色 |
+| Azure 返回 InvalidParameterValue 和字段 message/target/details | 捕获私有 stderr，释放提交锁后用 helper 脱敏持久化并回读；不只保留错误码 |
+| 历史失败没有 message/details | 明确证据缺失，只检查既有私有证据和有授权的只读诊断，不猜具体字段或创建一次取错误 |
+| 明确参数拒绝，standing grant 有效且用户确认纠正内容 | 按原名称权威查重后最多执行一次纠正尝试，不重复请求凭据授权 |
 | 用户要求附件、secondary consent、关闭/更新工单 | 明确范围并移交批准流程，不扩大命令集合 |
 
 完成真实冒烟测试的证据应包括脱敏的当前 Project 凭据来源与权限核验、目标订阅、创建时间、稳定名称、Azure case ID 以及恢复查询结果；身份令牌、完整联系人和正文不进入验收日志。

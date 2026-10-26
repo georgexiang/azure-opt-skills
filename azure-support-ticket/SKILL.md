@@ -31,7 +31,7 @@ requiredCapabilities:
 
 先完整阅读 [提交命令与恢复流程](references/submission.md)。检查当前 Project 的 Azure CLI 和凭据；缺少工具时明确报告实际阻塞项，不索取聊天中的密码、令牌或证书。
 
-这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
+这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。用户要求永久/持续授权时，申请 `standing` 且不设置授权到期时间；批准后核验实际 grant 的模式、用途和作用域，不能只改申请文字或继续索取一次性授权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
 
 按 reference 逐个核验候选 profile，汇总当前 Project 实际可访问的 tenant 和 subscription。开始分类或提交前向用户展示：
 
@@ -79,7 +79,7 @@ requiredCapabilities:
 
 再次展示当前 Project 可访问的 tenant/subscription 清单并突出本次选中项；清单与步骤 1 不一致时停止并重新选择。随后展示：选中 profile label、目标 tenant/subscription、工单资源名称、服务和分类显示名及 ID、完整标题/描述、严重程度、全部联系方式、技术资源或配额详情、诊断授权及 24×7 选项。明确告知内容和联系人资料将发送给 Microsoft Support。
 
-使用交互确认工具要求用户明确批准这一版内容；没有该工具时，在当前会话展示完整内容并等待用户明确回复确认。取消、拒绝或尚未回复时停止；确认后字段、目标、身份或授权发生变化时重新复核并确认。确认仅允许使用选中凭据对该目标执行一次创建，不授予额外的平台或 Azure 权限。
+使用交互确认工具要求用户明确批准这一版内容；没有该工具时，在当前会话展示完整内容并等待用户明确回复确认。取消、拒绝或尚未回复时停止；确认后字段、目标、身份或授权发生变化时重新复核并确认。本次确认批准使用选中凭据创建当前版本的该工单，不授予额外的平台或 Azure 权限。工单内容确认与 Keychain 授权模式独立：有效的 `standing` 凭据授权可供后续范围内的只读核验、失败诊断及重新确认后的纠正尝试复用，不因一次 CLI 调用或创建失败而消耗。
 
 完成条件：用户已批准当前完整内容，且稳定的 ticket 名称、版本和提交状态已保存到当前 Project 的受控请求记录。
 
@@ -89,7 +89,7 @@ requiredCapabilities:
 
 使用固定命令及独立参数执行创建；动态数据不进入 shell 语法。不使用 `--no-wait`，不把用户提供的文本作为选项名、命令或脚本执行。创建命令退出后，再按同一订阅和名称读取并核验 `supportTicketId`。
 
-超时、断网、响应不明确或异步未完成时，不生成新名称、也不盲目重复创建；按 reference 恢复查询。权限、分类、配额或计划错误必须明确报告，不宣称创建成功。
+超时、断网、响应不明确或异步未完成时，不生成新名称、也不盲目重复创建；按 reference 恢复查询。权限、分类、配额或计划错误必须明确报告，不宣称创建成功。发生 `InvalidParameterValue` 时，按 reference 保留脱敏的具体错误 message、target、details 和请求标识，定位被拒绝的字段；只有错误码时标记证据不足，不猜参数、不以重新创建来获取错误。
 
 完成条件：Azure 返回非空 `supportTicketId` 和匹配的资源 ID；否则结果保持“待核验”或“失败”。
 
