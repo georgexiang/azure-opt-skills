@@ -2,6 +2,16 @@
 
 仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。优先使用当前 Project 已有的 Azure CLI profile 或平台授权给本项目的凭据；缺少匹配 profile 时，在当前 Project 执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配，也不要求额外的执行环境绑定。
 
+## 凭据授权用途与历史限制恢复
+
+在读取或加载凭据前，通过平台的 Keychain/凭据目录读取当前 Project 可见的 credential、grant、audience、status、expiresAt 和 purpose 元数据；不读取 secret 值。认证可用、Azure RBAC 允许和凭据所有者批准本次用途是三个独立条件。
+
+- 当前有效 grant 的 audience 必须覆盖本 Project，purpose 必须允许本次 Support 操作。只有诊断/数据刷新用途的 grant 不足以授权创建工单。
+- 如果旧 grant 仍限定另一执行上下文，使用平台的凭据申请流程，请求所有者批准在当前 Project 会话中读取分类、按稳定名称查重并创建用户确认的 Support 工单。说明目标订阅、用途及请求一次性还是持续授权；等待所有者审批。不要修改授权记录、伪造审批或用已有登录缓存绕过 purpose 限制。
+- QM 提供 Keychain 时，先按当前 Keychain manifest 获取元数据；缺少合适授权时调用 `POST /v1/keychain/asks`，body 为 `{credential, purpose, requestedMode}`。平台按凭据、Project 和请求来源去重，不按 purpose 去重：返回 existing/pending ask 时必须核对其冻结的 purpose 是否覆盖本次 Support 用途。相符才复用；不相符则明确报告旧申请用途冲突，请所有者先拒绝/处理旧申请后再按当前用途申请，不能修改原申请、谎称新用途已送审或更换来源绕过去重。返回实际 ask ID 和平台审批入口；未收到有效审批时不调用 use 或 Azure 创建命令。
+- 批准后重新读取 grant 的 audience/status/expiry/purpose，优先按当前 Keychain manifest 定义的 use 命令在当前项目加载凭据。`POST /v1/keychain/use`（`{grant}`）返回的是含敏感材料的 shell 初始化脚本，发出 POST 本身不等于已加载：将响应写入权限为 `0600` 的临时文件，在同一 shell 中 source 后执行所需 Azure 命令，最后清理临时脚本；不显示、读取到聊天、记录日志或启用 shell tracing。不要预先单独调用 use 来试探一次性 grant，以免消耗授权却未使用。每次 Azure 命令使用相同选中 profile，核验实际 account 上下文。遇到 use 拒绝时报告实际拒绝，不换 profile 绕过。
+- 旧聊天结论和 Memory 中的环境名称只是历史上下文，不是当前授权证明。授权已经更新时以实时元数据为准，重新加载当前 Skill 和 reference，不沿用之前的拒绝结论。报告必须区分“待凭据用途审批”“平台加载拒绝”和“Azure 权限/计划失败”，不能统称为缺少执行环境。
+
 ## 多租户身份发现与选择
 
 即使没有 memory 映射，也先检查当前 Project 进程使用的 Azure CLI profile：已设置 `AZURE_CONFIG_DIR` 时沿用该目录，否则使用当前项目 HOME 下的 `$HOME/.azure`。使用下述 `account list` 核验已有登录，不读取 token/cache 文件，不因缺少名为 Support 的环境或 profile 而拒绝。

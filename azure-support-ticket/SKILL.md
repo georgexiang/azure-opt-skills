@@ -31,7 +31,7 @@ requiredCapabilities:
 
 先完整阅读 [提交命令与恢复流程](references/submission.md)。检查当前 Project 的 Azure CLI 和凭据；缺少工具时明确报告实际阻塞项，不索取聊天中的密码、令牌或证书。
 
-这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
+这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
 
 按 reference 逐个核验候选 profile，汇总当前 Project 实际可访问的 tenant 和 subscription。开始分类或提交前向用户展示：
 
@@ -48,7 +48,7 @@ requiredCapabilities:
 
 技术支持通常需要有效支持计划；计费和订阅管理等请求也受 Azure 的权限及资格规则约束。遇到计划、权限或服务可用性错误，报告具体阻塞原因，不自动扩大权限或降级严重程度。
 
-完成条件：当前 Project 的凭据来源已确认；可访问清单和选中项已展示；选中 profile 的 tenant/subscription/cloud/state、Support 工具和可读取权限已核验；缺失或未知项已显式列出。
+完成条件：当前 Project 的凭据来源及 Support 授权用途已确认（待审批时先停止并给出审批入口）；可访问清单和选中项已展示；选中 profile 的 tenant/subscription/cloud/state、Support 工具和可读取权限已核验；缺失或未知项已显式列出。
 
 ### 2. 收集内容并解析分类
 

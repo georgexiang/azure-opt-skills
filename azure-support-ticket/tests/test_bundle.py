@@ -42,6 +42,16 @@ class SupportBundleTests(unittest.TestCase):
         self.assertIn("串行化", reference)
         self.assertIn("shell=False", reference)
 
+    def test_restricted_grant_requests_owner_approval_instead_of_environment_switch(self):
+        text = (ROOT / "azure-support-ticket/references/submission.md").read_text()
+        for required in (
+            "purpose", "audience", "POST /v1/keychain/asks", "pending ask",
+            "等待所有者审批", "不要修改授权记录", "POST /v1/keychain/use",
+            "历史上下文", "待凭据用途审批",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
     def test_bundle_links_exist(self):
         for path in (ROOT / "azure-support-ticket").rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):
