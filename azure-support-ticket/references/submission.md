@@ -2,6 +2,16 @@
 
 仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。优先使用当前 Project 已有的 Azure CLI profile 或平台授权给本项目的凭据；缺少匹配 profile 时，在当前 Project 执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配，也不要求额外的执行环境绑定。
 
+## Project 共享身份选择
+
+将聊天请求者、凭据所有者和 Azure 执行身份视为三个不同角色。Project 共享 grant 的 `audienceScopeId` 为本项目，且长期 purpose 允许项目成员提交 Support 工单时，项目内有访问权限的成员均可使用该 grant；原申请人的姓名或 requesterId 不把它变成个人专属授权。保持平台的项目成员校验，不能用于项目外用户或其他 Project。
+
+用户要求使用项目已有共享 Azure 凭据时，按目标 tenant/subscription、有效 grant、Support 用途和实际 Azure 权限选身份，不要求“George 的 Azure 凭据”或其他与聊天者同名的账号。没有聊天者个人 profile 不是失败条件；已有匹配的项目 standing grant 时，不为每个成员重复申请凭据授权。若 grant 的真实 purpose 另有限定，仍须满足，不能把仅登录成功或数据刷新用途当作 Support 写入授权。
+
+只有用户当前明确要求验证某个具体 Azure 账号或其个人 RBAC 时，才把该身份作为硬性目标；其他共享账号成功不能证明这个指定账号有权限。用户后续明确改为共享项目身份时，以最新选择为准，重新读取实时授权并展示选中的共享身份，不继续沿用旧身份测试条件，也不谎称已验证用户个人权限。
+
+普通工单创建不要求先具备关闭工单能力。当前 Skill 仍不执行关闭操作；若用户明确要求“测试后必须关闭”，先告知这一范围限制，取得允许保持打开的确认或提供已批准的关闭流程后再创建测试单，不把关闭限制泛化为禁止所有正式工单。
+
 ## 凭据授权用途与历史限制恢复
 
 在读取或加载凭据前，通过平台的 Keychain/凭据目录读取当前 Project 可见的 credential、grant、audience、status、expiresAt 和 purpose 元数据；不读取 secret 值。认证可用、Azure RBAC 允许和凭据所有者批准本次用途是三个独立条件。

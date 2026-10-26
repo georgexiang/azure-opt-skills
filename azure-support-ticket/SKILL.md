@@ -19,6 +19,7 @@ requiredCapabilities:
 这是独立的写入 Skill，不扩展 `azure-ops` 的只读 guard。
 
 - 直接使用当前 Project 会话可用且获授权使用的 Azure 凭据；普通项目 Sandbox 可执行提交。执行资格取决于凭据、目标权限和本次确认，而不是环境名称、attachment 或单独执行器的存在。
+- 共享授权的 audience 是 Project 而非某位申请人。长期用途覆盖项目成员提交时，任何有权进入该 Project 的成员均可复用同一有效 standing grant；不要求其本人有 Azure 登录、拥有该凭据，或 Azure 账号名与聊天姓名一致。Azure 中执行操作的是选中的共享身份，不因此证明聊天用户个人的 Azure RBAC。遵循 reference 中的身份选择规则，不跨项目复用。
 - 执行身份在目标订阅上需要 `Microsoft.Support/supportTickets/write`，通常使用 `Support Request Contributor` 或经过审核的最小权限自定义角色。已有身份具备该权限即可，无需换身份或授予资源 `Contributor` / `Owner`。角色配置由运营方完成，Skill 不执行角色分配。
 - 仅使用当前 Project 已有或经平台授权提供给该 Project 的凭据，不搜索或复制其他 Project、Personal scope 的 token/cache。不把只读 `AZURE_OPS_*` 共享诊断身份升级或转换为写入身份。
 - 本 Skill 通过 Azure CLI 直接执行 reference 列出的认证、上下文读取、服务和分类读取、本次 ticket 的读取和创建；`azure-ops` 的 guard 仍只用于诊断，不向其增加写命令。平台的工具、出网、凭据授权和目标限制仍然有效；真实被拒绝时报告具体限制，不绕过。
@@ -31,7 +32,7 @@ requiredCapabilities:
 
 先完整阅读 [提交命令与恢复流程](references/submission.md)。检查当前 Project 的 Azure CLI 和凭据；缺少工具时明确报告实际阻塞项，不索取聊天中的密码、令牌或证书。
 
-这是多租户、多订阅 Project。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。用户要求永久/持续授权时，申请 `standing` 且不设置授权到期时间；批准后核验实际 grant 的模式、用途和作用域，不能只改申请文字或继续索取一次性授权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
+这是多租户、多订阅 Project。先区分当前聊天请求者与实际 Azure 执行身份：用户选择项目共享凭据时，优先发现覆盖当前 Project 和 Support 用途的授权，不按聊天姓名过滤 Azure 身份。若用户最新明确允许共享身份，旧对话中的“验证某人个人身份”不再作为前置条件；仍如实标明使用的是共享身份。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。用户要求永久/持续授权时，申请 `standing` 且不设置授权到期时间；批准后核验实际 grant 的模式、用途和作用域，不能只改申请文字或继续索取一次性授权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
 
 按 reference 逐个核验候选 profile，汇总当前 Project 实际可访问的 tenant 和 subscription。开始分类或提交前向用户展示：
 

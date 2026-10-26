@@ -220,6 +220,8 @@ Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目
 | 诊断身份     | VM、Monitor、Resource Health、Service Health、Resource Graph 读取 | 只读与最小权限                             |
 | Support 提交 | 当前 Project 中获授权的 Azure 凭据；不要求单独环境             | 目标订阅的 Support Request Contributor 或审核过的最小权限自定义角色 |
 
+Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可供该项目内有访问权限的成员复用，不绑定最初申请人，也不要求每位成员拥有同名个人 Azure 登录。工单由选中的共享 Azure 身份执行；用户个人 RBAC 与项目凭据授权是不同概念，不能互相冒充。用户最新选择项目共享身份时，不再沿用旧对话中个人账号测试的前置条件。
+
 用户要求“永久授权”时，`azure-support-ticket` 请求由凭据所有者批准 **standing（持续到撤销）** 的项目内 Support 用途，核验实际 grant 的模式、作用域、长期用途及未设置到期时间；不将一次性 grant、审批卡片 TTL 或 Azure 登录令牌有效期混为一谈。有效的持续授权可用于后续范围内的诊断与提交，不为每次失败重新申请 once；每张工单及实质内容修改仍需用户确认。冻结用途仅允许一次尝试的旧 pending 申请，应由所有者先处理，再申请长期用途，不能改写或绕过。
 
 参数错误通过 bundle 内的 `scripts/capture_azure_error.py` 保留脱敏的 message、target、details 与请求标识；helper 仅处理本地错误记录，不调用 Azure。历史错误只有代码时明确证据不足，不猜字段或盲目重试。

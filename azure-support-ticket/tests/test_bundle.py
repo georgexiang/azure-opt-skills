@@ -91,6 +91,21 @@ class SupportBundleTests(unittest.TestCase):
             (ROOT / "azure-support-ticket/scripts/capture_azure_error.py").is_file()
         )
 
+    def test_project_grants_are_not_requester_personal_credentials(self):
+        text = (ROOT / "azure-support-ticket/references/submission.md").read_text()
+        for required in (
+            "三个不同角色",
+            "audienceScopeId",
+            "原申请人的姓名或 requesterId",
+            "不为每个成员重复申请",
+            "以最新选择为准",
+            "个人 RBAC",
+            "普通工单创建不要求先具备关闭工单能力",
+            "测试后必须关闭",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
     def test_bundle_links_exist(self):
         for path in (ROOT / "azure-support-ticket").rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):
