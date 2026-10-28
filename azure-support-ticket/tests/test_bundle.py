@@ -106,6 +106,21 @@ class SupportBundleTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, text)
 
+    def test_toolchain_preflight_and_all_azure_examples_use_packaged_entry(self):
+        skill = (ROOT / "azure-support-ticket/SKILL.md").read_text()
+        reference = (ROOT / "azure-support-ticket/references/submission.md").read_text()
+        for host in (
+            "pypi.org",
+            "files.pythonhosted.org",
+            "azcliprod.blob.core.windows.net",
+        ):
+            self.assertIn(f"egress:{host}", skill)
+        self.assertIn("azure_cli.sh --check", reference)
+        self.assertIn("azure_cli.sh --ensure", reference)
+        self.assertNotRegex(reference, r"(?m)^az ")
+        self.assertNotIn("缺少 extension 时让运营方安装", reference)
+        self.assertIn("不构成重新创建授权", reference)
+
     def test_bundle_links_exist(self):
         for path in (ROOT / "azure-support-ticket").rglob("*.md"):
             for target in re.findall(r"\]\(([^)]+)\)", path.read_text()):

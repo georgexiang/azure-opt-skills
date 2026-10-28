@@ -2,6 +2,26 @@
 
 仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。优先使用当前 Project 已有的 Azure CLI profile 或平台授权给本项目的凭据；缺少匹配 profile 时，在当前 Project 执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配，也不要求额外的执行环境绑定。
 
+## 工具初始化与统一入口
+
+在加载凭据和身份发现之前，先运行：
+
+```text
+bash skills/azure-support-ticket/scripts/azure_cli.sh --check
+```
+
+检查失败时，通过后台/长任务工具运行以下命令，等待安装结束，再重新执行 `--check`；成功后继续同一个请求，不要求用户手动安装：
+
+```text
+bash skills/azure-support-ticket/scripts/azure_cli.sh --ensure
+```
+
+本 bundle 自带固定版本安装器、依赖哈希锁和统一入口，可独立导入。只修复当前 Project 持久 `$HOME/.local` 中的工具，不加载凭据、不修改认证缓存、RBAC 或 Sandbox 镜像。已有安装可幂等复用；安装器用项目内进程锁串行化安装，下载或验收失败保留原安装。下载域名见本 Skill 的 requiredCapabilities；出网或基础依赖被拒绝时报告实际阻塞项，不绕过平台限制。
+
+后续所有 Azure 命令都使用下列完整入口，包括 `account`、`login`、`rest`、分类读取、查重、创建和恢复查询。argv 接口使用 `["bash", "skills/azure-support-ticket/scripts/azure_cli.sh", ...]`，不改为系统 `az`。入口自动选择受控 CLI、设置扩展目录并关闭动态安装，保留当前选中的 `AZURE_CONFIG_DIR`；无需 source `.bashrc` 或继承上一条命令的 export。安装器和入口的版本/路径配置来自同一 `azure_cli_env.sh`。
+
+`--check` 使用临时空 profile 验证 CLI、Support 扩展版本及创建命令可加载，不验证 Azure 身份或写权限。`SUPPORT_TOOLCHAIN_NOT_READY` 表示工具未就绪；与凭据授权、401/403、支持计划错误分别报告。普通 Azure 调用不会隐式安装、登录、修复或重试；创建结果不明确时仍只按原稳定名称恢复查询。若运行中发现工具问题，先停止并重新完成工具预检，再核验身份；工具修好本身不构成重新创建授权。
+
 ## Project 共享身份选择
 
 将聊天请求者、凭据所有者和 Azure 执行身份视为三个不同角色。Project 共享 grant 的 `audienceScopeId` 为本项目，且长期 purpose 允许项目成员提交 Support 工单时，项目内有访问权限的成员均可使用该 grant；原申请人的姓名或 requesterId 不把它变成个人专属授权。保持平台的项目成员校验，不能用于项目外用户或其他 Project。
@@ -47,7 +67,7 @@ azure-support-profile tenantId=<tenant-uuid> subscriptionId=<subscription-uuid> 
 Memory 是路由提示。每个候选都必须使用其 `AZURE_CONFIG_DIR` 实时执行：
 
 ```text
-az account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
 ```
 
 执行工具通过进程环境传入选中 profile 的 `AZURE_CONFIG_DIR`，不把 profile 路径拼入用户可控的 shell 语法。不得读取、复制或输出目录内的 token/cache。对清单中每个候选 subscription，再执行 `account show --subscription <subscription-uuid>` 核验实时上下文。
@@ -83,14 +103,14 @@ $HOME/.azure-support/profiles/<tenant-uuid>
 目录权限设为 `0700`，且不得覆盖其他 tenant 的 profile。通过后台/长任务工具运行：
 
 ```text
-az login --tenant <tenant-uuid> --use-device-code --output none
+bash skills/azure-support-ticket/scripts/azure_cli.sh login --tenant <tenant-uuid> --use-device-code --output none
 ```
 
 只向操作者显示 Microsoft 设备登录 URL、一次性代码和等待状态。授权完成后：
 
 ```text
-az account set --subscription <subscription-uuid>
-az account show --subscription <subscription-uuid> --query '{subscription:id,name:name,tenant:tenantId,cloud:environmentName,state:state}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh account set --subscription <subscription-uuid>
+bash skills/azure-support-ticket/scripts/azure_cli.sh account show --subscription <subscription-uuid> --query '{subscription:id,name:name,tenant:tenantId,cloud:environmentName,state:state}' --output json
 ```
 
 目标 subscription 不可见、tenant 不匹配、状态不是 `Enabled` 或 Conditional Access 拒绝时停止。保留脱敏后的错误代码和 request/correlation ID；不刷新代码来绕过策略，不回退到无 `--tenant` 的登录。
@@ -100,18 +120,18 @@ az account show --subscription <subscription-uuid> --query '{subscription:id,nam
 ## 工具与上下文
 
 ```text
-az version --output json
-az extension show --name support --query version --output tsv
-az account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh version --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh extension show --name support --query version --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
 ```
 
-上述命令与后续每条 Azure 命令都使用同一个选中 profile 环境。需要 Support extension 的 `in-subscription tickets` 命令。Azure CLI 文档要求 CLI 2.57.0 或更高；具体安装版本由当前项目的工具安装流程维护。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。缺少 extension 时让运营方安装到选中 profile 或批准的共享 extension 目录，避免在写入步骤隐式动态安装。
+上述命令与后续每条 Azure 命令都使用同一个选中 profile 和统一入口。工具版本由 bundle 内共享配置及安装器维护；工具异常回到“工具初始化与统一入口”处理，不在写入步骤动态安装。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。
 
 在读取分类前还要核验：
 
 ```text
-az provider show --subscription <subscription-uuid> --namespace Microsoft.Support --query registrationState --output tsv
-az support services list --subscription <subscription-uuid> --query 'length(@)' --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh provider show --subscription <subscription-uuid> --namespace Microsoft.Support --query registrationState --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh support services list --subscription <subscription-uuid> --query 'length(@)' --output tsv
 ```
 
 身份返回的有效 actions 必须覆盖 `Microsoft.Support/supportTickets/write`。订阅和可读祖先 scope 的 deny assignment 不得覆盖该 action；祖先 deny 无读取权限时展示为未知，并说明创建调用可能是第一项权威验证。登录成功或服务列表可读本身不证明拥有写权限或有效支持计划。
@@ -119,8 +139,8 @@ az support services list --subscription <subscription-uuid> --query 'length(@)' 
 ## 服务与问题分类
 
 ```text
-az support services list --subscription <subscription-uuid> --output json
-az support services problem-classifications list --subscription <subscription-uuid> --service-name <service-name-from-list> --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh support services list --subscription <subscription-uuid> --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh support services problem-classifications list --subscription <subscription-uuid> --service-name <service-name-from-list> --output json
 ```
 
 从服务结果中选取 `name` 和完整 `id`，按显示名筛选但不猜测 ID。分类结果中保存完整 `id`；其 `/providers/Microsoft.Support/services/<service-name>/problemClassifications/<classification-name>` 路径必须属于所选服务。创建 CLI 的 `--problem-classification` 使用完整分类 ID，不额外拼接未经验证的 service ID。
@@ -134,7 +154,7 @@ az support services problem-classifications list --subscription <subscription-uu
 ## 提交前读取
 
 ```text
-az support in-subscription tickets show --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --query '{id:id,name:name,caseId:supportTicketId,title:title,description:description,classification:problemClassificationId,status:status,severity:severity,created:createdDate}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh support in-subscription tickets show --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --query '{id:id,name:name,caseId:supportTicketId,title:title,description:description,classification:problemClassificationId,status:status,severity:severity,created:createdDate}' --output json
 ```
 
 Support extension 的该命令会将 REST `properties` 展平，上述查询使用 CLI 顶层字段。当前项目升级 extension 时核对输出契约；任何必需字段缺失都不能当作成功。
@@ -148,7 +168,7 @@ Support extension 的该命令会将 REST `properties` 展平，上述查询使�
 ## 技术、计费和订阅管理创建
 
 ```text
-az support in-subscription tickets create --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --title <confirmed-title> --description <confirmed-description> --problem-classification <verified-full-classification-id> --severity <confirmed-severity> --contact-first-name <first-name> --contact-last-name <last-name> --contact-email <email> --contact-country <country> --contact-language <language> --contact-timezone <api-timezone> --contact-method <email-or-phone> --advanced-diagnostic-consent <Yes-or-No> --require-24-by-7-response <true-or-false> --query '{id:id,name:name,caseId:supportTicketId,status:status,severity:severity,created:createdDate}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh support in-subscription tickets create --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --title <confirmed-title> --description <confirmed-description> --problem-classification <verified-full-classification-id> --severity <confirmed-severity> --contact-first-name <first-name> --contact-last-name <last-name> --contact-email <email> --contact-country <country> --contact-language <language> --contact-timezone <api-timezone> --contact-method <email-or-phone> --advanced-diagnostic-consent <Yes-or-No> --require-24-by-7-response <true-or-false> --query '{id:id,name:name,caseId:supportTicketId,status:status,severity:severity,created:createdDate}' --output json
 ```
 
 按确认内容添加可选参数，每项都是独立的 argv：

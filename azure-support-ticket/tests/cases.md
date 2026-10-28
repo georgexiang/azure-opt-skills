@@ -8,7 +8,12 @@
 | 普通项目 Sandbox 已有目标 Support 写权限凭据 | 在当前会话完成复核、确认、查重、创建和 case ID 核验，不要求额外环境或绑定 |
 | 没有 memory、profile 映射或环境 attachment，但当前 CLI 已登录 | 检查当前 `AZURE_CONFIG_DIR` 或项目 `$HOME/.azure`，实时核验后继续 |
 | 平台已授权本项目使用凭据入口，但 CLI 尚未登录 | 使用该入口完成认证再核验，不索取聊天 secret，不误报必须换环境 |
-| 当前 Project 未认证或未装 extension | 报告具体缺失项；缺身份时引导 tenant-specific 登录，缺工具时由项目工具流程安装 |
+| 当前 Project 未认证或未装 extension | 先用本 bundle 入口自检，必要时后台 --ensure 并等待复检通过；再按授权流程加载身份，缺身份时引导 tenant-specific 登录 |
+| 仅导入 Support bundle，未导入 azure-ops | 使用本 bundle 自带安装器、依赖锁及统一入口，不引用其他 Skill 路径 |
+| 上一会话装好非默认目录扩展，新会话未继承 export | 非交互进程通过统一入口发现相同扩展，不要求手动设置环境变量 |
+| 更换 AZURE_CONFIG_DIR 或 PATH 中有系统 az | 保留选中 profile，但仍使用受控 CLI 与固定扩展目录 |
+| 工具安装下载/校验/命令加载失败 | 停止并报告工具失败，保留原安装；不加载凭据或将问题误报为 Azure 权限不足 |
+| 工具恢复但已有创建结果不明确 | 仍只按原稳定名称恢复查询，不因修好工具自动重试创建 |
 | 凭据只属于其他 Project 或 Personal scope | 拒绝复制或使用，要求为当前 Project 正式授权 |
 | 平台工具或目标策略明确拒绝操作 | 报告具体拒绝，不通过切换路径、工具或 profile 绕过 |
 | 平台未提供目标允许列表 | 以用户选定目标及实时权限为准，不编造环境/允许列表前置条件 |

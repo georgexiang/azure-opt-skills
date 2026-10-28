@@ -128,7 +128,9 @@ https://github.com/georgexiang/azure-opt-skills
 
 注册后选择 `Browse skills...`，并将 `azure-ops` 导入目标 Scope。仓库更新后使用 `Sync now`。无需构建或替换 Sandbox 镜像。
 
-如需实际提交，另行导入 `azure-support-ticket` bundle（包含 `SKILL.md`、`references/submission.md` 和 `tests/cases.md`）。该 bundle 不依赖另一个 Skill 的文件路径，也不内置认证或安装脚本；使用当前 Project 的 Azure CLI、Support extension 和获授权凭据。当前项目已有匹配的 Azure CLI 登录即可核验并继续，无需额外环境绑定或 memory 映射。缺少身份时可按 Skill 在当前项目执行 tenant-specific device-code 登录；导入 Skill 本身不授予 Azure 权限。
+如需实际提交，另行导入 `azure-support-ticket` bundle。它包含提交 reference、错误证据 helper，以及独立可用的 CLI 安装器、依赖哈希锁、`azure_cli_env.sh` 和 `azure_cli.sh`；不依赖另一个 Skill 的文件路径。Support 先经 `bash skills/azure-support-ticket/scripts/azure_cli.sh --check` 自检，失败时后台运行同一入口的 `--ensure` 并等待，再次自检成功才加载凭据。所有 Support Azure 命令均经过该入口，自动定位非默认扩展目录，沿用已选择的 `AZURE_CONFIG_DIR`，不依赖上次会话 export 或系统 `az`。安装不加载凭据，普通调用不隐式安装或重试；现有项目可复用原安装，无需重新登录。缺少身份时按 Skill 执行 tenant-specific device-code 登录；导入或安装工具本身不授予 Azure 权限。
+
+两个 Azure bundle 中的 `azure_cli_env.sh`、`azure_cli.sh`、`install_azure_cli.sh` 与依赖锁是同一工具链的打包副本，以便 subset 导入后独立运行。维护时在 `azure-ops/scripts` 更新后同步到 `azure-support-ticket/scripts`；行为测试强制四项字节一致。版本与路径只在每个 bundle 的 `azure_cli_env.sh` 定义，安装器检查通过实际执行入口验收。`azure-ops` 的诊断命令仍经过只读 guard，不改用 Support 直接执行流程。
 
 ### 多租户 Support 提交流程
 
@@ -172,7 +174,7 @@ Web UI 的直接创建表单仅支持 `name`、`description`、`body` 与 `scope
 
 ## Sandbox 与认证要求
 
-该 Skill 不修改 Sandbox 镜像。在某个 Scope 首次发起实时查询时，会通过后台任务安装以下组件：
+该 Skill 不修改 Sandbox 镜像。在某个 Scope 首次发起实时查询或 Support 工作流时，会通过后台任务安装以下组件：
 
 ```text
 Azure CLI 2.89.1
@@ -226,7 +228,7 @@ Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可�
 
 参数错误通过 bundle 内的 `scripts/capture_azure_error.py` 保留脱敏的 message、target、details 与请求标识；helper 仅处理本地错误记录，不调用 Azure。历史错误只有代码时明确证据不足，不猜字段或盲目重试。
 
-独立 `/azure-support-ticket` 的实际提交流程是：搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
+独立 `/azure-support-ticket` 的实际提交流程是：工具自检/必要时安装并通过统一入口复检 → 搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
 ## Azure CLI 安全层
 

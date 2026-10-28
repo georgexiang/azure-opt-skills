@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-azure_cli_version="2.89.1"
-support_extension_version="2.0.1"
-support_extension_url="https://azcliprod.blob.core.windows.net/cli-extensions/support-2.0.1-py2.py3-none-any.whl"
-support_extension_sha256="3f070154f839464aa24b54990d87d2dba99d6da60ec3ef314a74ba22c268fec4"
-install_base="$HOME/.local/share/azure-cli"
-install_root="$install_base/$azure_cli_version"
-bin_dir="$HOME/.local/bin"
-extension_dir="$install_base/extensions"
-state_dir="$HOME/.local/state"
-marker="$install_root/.complete"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/azure_cli_env.sh"
 lock_file="$script_dir/azure-cli-2.89.1.lock"
 backup_root=""
 extension_staging=""
@@ -49,33 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fail() {
-	printf '%s\n' "$1" >&2
-	exit 1
-}
-
-assert_owned_real_dir() {
-	local path="$1"
-	[[ -d "$path" && ! -L "$path" ]] || fail "Unsafe Azure CLI install directory: $path"
-	[[ "$(stat -c %u "$path")" == "$(id -u)" ]] || fail "Azure CLI install directory has another owner: $path"
-}
-
-assert_safe_existing_path() {
-	local path="$1"
-	if [[ -e "$path" || -L "$path" ]]; then
-		assert_owned_real_dir "$path"
-	fi
-}
-
-[[ "$HOME" == /* ]] || fail "HOME must be an absolute path"
-assert_owned_real_dir "$HOME"
-assert_safe_existing_path "$HOME/.local"
-assert_safe_existing_path "$HOME/.local/share"
-assert_safe_existing_path "$install_base"
-assert_safe_existing_path "$install_root"
-assert_safe_existing_path "$bin_dir"
-assert_safe_existing_path "$extension_dir"
-assert_safe_existing_path "$state_dir"
+validate_toolchain_paths
 
 if [[ -e "$bin_dir/az" || -L "$bin_dir/az" ]]; then
 	[[ -L "$bin_dir/az" ]] || fail "Refusing to replace non-symlink Azure CLI command: $bin_dir/az"
@@ -91,18 +56,7 @@ fi
 check_installation() {
 	[[ -f "$marker" && -x "$install_root/bin/az" && -L "$bin_dir/az" ]] || return 1
 	[[ "$(readlink "$bin_dir/az")" == "../share/azure-cli/$azure_cli_version/bin/az" ]] || return 1
-	[[ "$(installed_cli_version)" == "$azure_cli_version" ]] || return 1
-	local check_config support_version
-	check_config="$(mktemp -d)"
-	support_version="$(
-		env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 \
-			AZURE_CORE_COLLECT_TELEMETRY=0 \
-			AZURE_CONFIG_DIR="$check_config" \
-			AZURE_EXTENSION_DIR="$extension_dir" \
-			"$install_root/bin/az" extension show --name support --query version -o tsv 2>/dev/null || true
-	)"
-	rm -rf "$check_config"
-	[[ "$support_version" == "$support_extension_version" ]]
+	bash "$script_dir/azure_cli.sh" --check
 }
 
 installed_cli_version() {
@@ -113,6 +67,12 @@ installed_cli_version() {
 			AZURE_CONFIG_DIR="$check_config" AZURE_CORE_COLLECT_TELEMETRY=0 \
 			"$install_root/bin/az" version --query '"azure-cli"' -o tsv 2>/dev/null || true
 	)"
+	if ! env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+		AZURE_CONFIG_DIR="$check_config" AZURE_CORE_COLLECT_TELEMETRY=0 \
+		AZURE_EXTENSION_DIR="$extension_dir" AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no \
+		"$install_root/bin/az" account show --help >/dev/null 2>&1; then
+		version=""
+	fi
 	rm -rf "$check_config"
 	printf '%s' "$version"
 }
@@ -162,9 +122,12 @@ if [[ "$installed_cli" != "$azure_cli_version" ]]; then
 		--no-cache-dir \
 		--quiet \
 		--require-hashes \
+		--no-deps \
 		--only-binary=:all: \
 		--index-url https://pypi.org/simple \
 		-r "$lock_file"
+	# The lock contains the full closure; never resolve unpinned transitive candidates.
+	env -i HOME="$HOME" PATH=/usr/bin:/bin "$install_root/bin/python" -m pip check
 	printf '%s\n' "$azure_cli_version" >"$install_root/.complete"
 fi
 
@@ -184,7 +147,11 @@ installed_support="$(
 		"$bin_dir/az" extension show --name support --query version -o tsv 2>/dev/null || true
 )"
 
-if [[ "$installed_support" != "$support_extension_version" ]]; then
+if [[ "$installed_support" != "$support_extension_version" ]] || \
+	! env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+		AZURE_CORE_COLLECT_TELEMETRY=0 AZURE_CONFIG_DIR="$config_dir" \
+		AZURE_EXTENSION_DIR="$extension_dir" AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no \
+		"$bin_dir/az" support in-subscription tickets create --help >/dev/null 2>&1; then
 	support_wheel="$config_dir/support-$support_extension_version-py2.py3-none-any.whl"
 	curl --disable --fail --silent --show-error --location "$support_extension_url" --output "$support_wheel"
 	printf '%s  %s\n' "$support_extension_sha256" "$support_wheel" | sha256sum --check --status
@@ -227,7 +194,8 @@ installed_support="$(
 		"$bin_dir/az" extension show --name support --query version -o tsv
 )"
 
-if [[ "$installed_cli" != "$azure_cli_version" || "$installed_support" != "$support_extension_version" ]]; then
+if [[ "$installed_cli" != "$azure_cli_version" || "$installed_support" != "$support_extension_version" ]] || \
+	! bash "$script_dir/azure_cli.sh" --check; then
 	printf 'Azure CLI verification failed: cli=%s support=%s\n' "$installed_cli" "$installed_support" >&2
 	exit 1
 fi

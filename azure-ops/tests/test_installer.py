@@ -1,15 +1,12 @@
-#!/usr/bin/env python3
-
-import re
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 INSTALLER = (ROOT / "scripts" / "install_azure_cli.sh").read_text(encoding="utf-8")
+ENVIRONMENT = (ROOT / "scripts" / "azure_cli_env.sh").read_text(encoding="utf-8")
 LOCK = (ROOT / "scripts" / "azure-cli-2.89.1.lock").read_text(encoding="utf-8")
 INSTALLER_PATH = ROOT / "scripts" / "install_azure_cli.sh"
 
@@ -28,6 +25,7 @@ class InstallerContractTests(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             f"if [[ \"$1\" == version ]]; then printf '{reported_version}\\n'; exit 0; fi\n"
             f"if [[ \"$1 $2\" == 'extension show' ]]; then printf '{support_version}\\n'; exit 0; fi\n"
+            "if [[ \"$*\" == 'support in-subscription tickets create --help' || \"$*\" == 'account show --help' ]]; then exit 0; fi\n"
             "exit 1\n",
             encoding="utf-8",
         )
@@ -38,34 +36,42 @@ class InstallerContractTests(unittest.TestCase):
         command.symlink_to("../share/azure-cli/2.89.1/bin/az")
         extension = home / ".local" / "share" / "azure-cli" / "extensions"
         extension.mkdir()
+        (extension / "support").mkdir()
         (extension / "sentinel").write_text("keep\n", encoding="utf-8")
         return install_root, extension
 
     def test_versions_and_paths_are_fixed(self) -> None:
-        self.assertIn('azure_cli_version="2.89.1"', INSTALLER)
-        self.assertIn('support_extension_version="2.0.1"', INSTALLER)
-        self.assertIn('install_base="$HOME/.local/share/azure-cli"', INSTALLER)
-        self.assertNotRegex(INSTALLER, r"AZURE_CLI_(?:VERSION|INSTALL_ROOT|BIN_DIR|STATE_DIR):-")
+        self.assertIn('azure_cli_version="2.89.1"', ENVIRONMENT)
+        self.assertIn('support_extension_version="2.0.1"', ENVIRONMENT)
+        self.assertIn('install_base="$HOME/.local/share/azure-cli"', ENVIRONMENT)
+        self.assertNotRegex(
+            INSTALLER, r"AZURE_CLI_(?:VERSION|INSTALL_ROOT|BIN_DIR|STATE_DIR):-"
+        )
 
     def test_cli_dependencies_require_hashes(self) -> None:
         self.assertIn("--require-hashes", INSTALLER)
-        self.assertIn('azure-cli==2.89.1 \\', LOCK)
+        self.assertIn("--no-deps", INSTALLER)
+        self.assertIn('"$install_root/bin/python" -m pip check', INSTALLER)
+        self.assertIn("azure-cli==2.89.1 \\", LOCK)
         self.assertRegex(LOCK, r"azure-cli==2\.89\.1[\s\\]+--hash=sha256:[0-9a-f]{64}")
 
     def test_support_extension_artifact_is_hash_pinned(self) -> None:
-        self.assertIn("support-2.0.1-py2.py3-none-any.whl", INSTALLER)
-        self.assertRegex(INSTALLER, r'support_extension_sha256="[0-9a-f]{64}"')
+        self.assertIn("support-2.0.1-py2.py3-none-any.whl", ENVIRONMENT)
+        self.assertRegex(ENVIRONMENT, r'support_extension_sha256="[0-9a-f]{64}"')
         self.assertIn("sha256sum --check --status", INSTALLER)
 
     def test_installer_has_check_and_lock_modes(self) -> None:
         self.assertIn('if [[ "${1:-}" == "--check" ]]', INSTALLER)
-        self.assertIn('flock 9', INSTALLER)
+        self.assertIn("flock 9", INSTALLER)
         self.assertIn('mktemp -d "$install_base/.backup-$azure_cli_version.', INSTALLER)
-        self.assertIn('mktemp -d "$install_base/.extensions-$support_extension_version.', INSTALLER)
+        self.assertIn(
+            'mktemp -d "$install_base/.extensions-$support_extension_version.',
+            INSTALLER,
+        )
 
     def test_installer_rejects_unsafe_install_directories(self) -> None:
         self.assertIn("assert_owned_real_dir", INSTALLER)
-        self.assertIn('[[ -d "$path" && ! -L "$path" ]]', INSTALLER)
+        self.assertIn('[[ -d "$path" && ! -L "$path" ]]', ENVIRONMENT)
         self.assertNotIn('find "$install_base"', INSTALLER)
 
     def test_installer_does_not_write_auth_directory(self) -> None:
@@ -80,6 +86,7 @@ class InstallerContractTests(unittest.TestCase):
             command.write_text("do not replace\n", encoding="utf-8")
             result = subprocess.run(
                 ["bash", str(INSTALLER_PATH)],
+                check=False,
                 capture_output=True,
                 env={"HOME": str(home), "PATH": os.environ["PATH"]},
                 text=True,
@@ -99,6 +106,7 @@ class InstallerContractTests(unittest.TestCase):
             command.symlink_to(target)
             result = subprocess.run(
                 ["bash", str(INSTALLER_PATH)],
+                check=False,
                 capture_output=True,
                 env={"HOME": str(home), "PATH": os.environ["PATH"]},
                 text=True,
@@ -108,13 +116,17 @@ class InstallerContractTests(unittest.TestCase):
             self.assertEqual(command.resolve(), target)
 
     def test_rejects_symlinked_local_directory_before_writing(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as outside:
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            tempfile.TemporaryDirectory() as outside,
+        ):
             home = Path(temporary)
             sentinel = Path(outside) / "sentinel"
             sentinel.write_text("keep\n", encoding="utf-8")
             (home / ".local").symlink_to(outside, target_is_directory=True)
             result = subprocess.run(
                 ["bash", str(INSTALLER_PATH)],
+                check=False,
                 capture_output=True,
                 env={"HOME": str(home), "PATH": os.environ["PATH"]},
                 text=True,
@@ -143,7 +155,13 @@ class InstallerContractTests(unittest.TestCase):
                 "HOME": str(home),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
-            result = subprocess.run(["bash", str(INSTALLER_PATH)], capture_output=True, env=env, text=True)
+            result = subprocess.run(
+                ["bash", str(INSTALLER_PATH)],
+                check=False,
+                capture_output=True,
+                env=env,
+                text=True,
+            )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "old\n")
 
@@ -160,9 +178,17 @@ class InstallerContractTests(unittest.TestCase):
                 "HOME": str(home),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
-            result = subprocess.run(["bash", str(INSTALLER_PATH)], capture_output=True, env=env, text=True)
+            result = subprocess.run(
+                ["bash", str(INSTALLER_PATH)],
+                check=False,
+                capture_output=True,
+                env=env,
+                text=True,
+            )
             self.assertNotEqual(result.returncode, 0)
-            self.assertEqual((extension / "sentinel").read_text(encoding="utf-8"), "keep\n")
+            self.assertEqual(
+                (extension / "sentinel").read_text(encoding="utf-8"), "keep\n"
+            )
 
     def test_final_verification_failure_restores_promoted_extension(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -172,9 +198,10 @@ class InstallerContractTests(unittest.TestCase):
             executable.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ \"$1\" == version ]]; then printf '2.89.1\\n'; exit 0; fi\n"
-                "if [[ \"$1 $2\" == 'extension add' ]]; then mkdir -p \"$AZURE_EXTENSION_DIR\"; touch \"$AZURE_EXTENSION_DIR/installed\"; exit 0; fi\n"
+                "if [[ \"$*\" == 'account show --help' ]]; then exit 0; fi\n"
+                'if [[ "$1 $2" == \'extension add\' ]]; then mkdir -p "$AZURE_EXTENSION_DIR"; touch "$AZURE_EXTENSION_DIR/installed"; exit 0; fi\n'
                 "if [[ \"$1 $2\" == 'extension show' ]]; then\n"
-                "  case \"$AZURE_EXTENSION_DIR\" in\n"
+                '  case "$AZURE_EXTENSION_DIR" in\n'
                 "    *'.extensions-2.0.1.'*) printf '2.0.1\\n' ;;\n"
                 "    *) if [[ -f \"$AZURE_EXTENSION_DIR/installed\" ]]; then printf 'wrong\\n'; else printf 'old\\n'; fi ;;\n"
                 "  esac\n"
@@ -188,7 +215,7 @@ class InstallerContractTests(unittest.TestCase):
             fake_bin.mkdir()
             fake_curl = fake_bin / "curl"
             fake_curl.write_text(
-                "#!/usr/bin/env bash\nout=''\nwhile [[ $# -gt 0 ]]; do if [[ \"$1\" == --output ]]; then out=\"$2\"; shift 2; else shift; fi; done\nprintf wheel >\"$out\"\n",
+                '#!/usr/bin/env bash\nout=\'\'\nwhile [[ $# -gt 0 ]]; do if [[ "$1" == --output ]]; then out="$2"; shift 2; else shift; fi; done\nprintf wheel >"$out"\n',
                 encoding="utf-8",
             )
             fake_curl.chmod(0o755)
@@ -197,12 +224,15 @@ class InstallerContractTests(unittest.TestCase):
             fake_sha.chmod(0o755)
             result = subprocess.run(
                 ["bash", str(INSTALLER_PATH)],
+                check=False,
                 capture_output=True,
                 env={"HOME": str(home), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
                 text=True,
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertEqual((extension / "sentinel").read_text(encoding="utf-8"), "keep\n")
+            self.assertEqual(
+                (extension / "sentinel").read_text(encoding="utf-8"), "keep\n"
+            )
             self.assertFalse((extension / "installed").exists())
 
 
