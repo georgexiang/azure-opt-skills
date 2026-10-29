@@ -354,7 +354,13 @@ class BundleTests(unittest.TestCase):
             ["SKILL.md"],
         )
         self.assertEqual(list(bundle.rglob("*.sh")), [])
-        self.assertEqual(list(bundle.rglob("*.py")), [])
+        self.assertEqual(
+            {p.relative_to(bundle).as_posix() for p in bundle.rglob("*.py")},
+            {
+                f"scripts/{name}.py"
+                for name in ("aks_auth", "aks_common", "aks_runtime", "aks_toolchain")
+            },
+        )
         manifest = json.loads((bundle / "UPSTREAM.json").read_text())
         self.assertEqual(manifest["mode"], "knowledge-only")
         self.assertEqual(len(manifest["selected"]), 3)

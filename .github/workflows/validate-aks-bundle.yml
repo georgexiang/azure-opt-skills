@@ -7,6 +7,13 @@ on:
       - "azure-ops/SKILL.md"
       - ".github/aks-upstream/**"
       - ".github/workflows/*aks*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "azure-aks-ops/**"
+      - "azure-ops/SKILL.md"
+      - ".github/aks-upstream/**"
+      - ".github/workflows/*aks*.yml"
   workflow_dispatch:
 
 permissions:
@@ -16,6 +23,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -29,14 +38,17 @@ jobs:
           "$RUNNER_TEMP/aks-dev/bin/python" -m pip install -r .github/aks-upstream/requirements.txt
       - name: Lint, formatting and typecheck
         run: |
-          "$RUNNER_TEMP/aks-dev/bin/ruff" check .github/aks-upstream
-          "$RUNNER_TEMP/aks-dev/bin/ruff" format --check .github/aks-upstream
-          "$RUNNER_TEMP/aks-dev/bin/mypy" .github/aks-upstream/*.py
+          "$RUNNER_TEMP/aks-dev/bin/ruff" check .github/aks-upstream azure-aks-ops/scripts
+          "$RUNNER_TEMP/aks-dev/bin/ruff" format --check .github/aks-upstream azure-aks-ops/scripts
+          "$RUNNER_TEMP/aks-dev/bin/mypy" .github/aks-upstream/*.py azure-aks-ops/scripts/aks_*.py
       - name: Offline integrity and regression tests
         run: |
           python3 .github/aks-upstream/validate_aks_bundle.py
-          python3 -m unittest discover -s .github/aks-upstream/tests -v
-          python3 -m unittest discover -s azure-ops/tests -v
+          "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s .github/aks-upstream/tests -v
+          "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s .github/aks-upstream/runtime-tests -v
+          "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s azure-ops/tests -v
+          node --check .github/aks-upstream/check_qm_ingest.mjs
+          node --check .github/aks-upstream/native_contract_fixture.mjs
           git diff --check
       - name: Verify reproducibility against pinned upstream commit
         run: python3 .github/aks-upstream/sync_aks_upstream.py --check

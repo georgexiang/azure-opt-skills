@@ -76,5 +76,5 @@
     ".github/plugins/aks-skills/skills/aks-troubleshooting/spot-and-zone-issues.md": "00531f4c15aafa5d89d9d8696d2b83c37611fbf7014600308252ef2382ec0379",
     ".github/plugins/aks-skills/skills/aks-troubleshooting/upgrade-operations.md": "aa7304a4d89389081c2622d7dd62b45d3e2c3aaa7238af87335dc38ef7817f3a"
   },
-  "transform_version": 1
+  "transform_version": 2
 }

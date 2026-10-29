@@ -74,9 +74,29 @@ def validate(root: Path) -> None:
     require(
         skill.startswith(b"---\nname: azure-aks-ops\n"), "Unexpected Skill identity"
     )
-    require(b"knowledge-only" in skill, "Missing capability contract")
+    require(
+        b"knowledge-only" in skill and b"bound-readonly" in skill,
+        "Missing dual-mode capability contract",
+    )
     bundle = root / "azure-aks-ops"
-    allowed = expected | {"azure-aks-ops/SKILL.md", "azure-aks-ops/tests/cases.md"}
+    local = json.loads((root / ".github/aks-upstream/runtime-assets.json").read_text())
+    require(
+        isinstance(local, list)
+        and all(
+            isinstance(p, str)
+            and not Path(p).is_absolute()
+            and ".." not in Path(p).parts
+            for p in local
+        ),
+        "Unsafe local runtime asset declaration",
+    )
+    local_paths = {"azure-aks-ops/" + p for p in local}
+    for path in local_paths:
+        require(
+            (root / path).is_file() and not (root / path).is_symlink(),
+            f"Missing local runtime asset: {path}",
+        )
+    allowed = expected | {"azure-aks-ops/SKILL.md"} | local_paths
     for path in bundle.rglob("*"):
         require(not path.is_symlink(), f"Symlink in bundle: {path}")
         if path.is_file():
@@ -84,9 +104,17 @@ def validate(root: Path) -> None:
                 path.relative_to(root).as_posix() in allowed,
                 f"Unreviewed runtime asset: {path}",
             )
-    validate_links({**outputs, "azure-aks-ops/SKILL.md": skill})
+    validate_links(
+        {
+            **outputs,
+            "azure-aks-ops/SKILL.md": skill,
+            **{p: (root / p).read_bytes() for p in local_paths if p.endswith(".md")},
+        }
+    )
 
 
 if __name__ == "__main__":
     validate(ROOT)
-    print("AKS bundle integrity, local links and knowledge-only packaging verified")
+    print(
+        "AKS bundle integrity, local links and explicit runtime asset inventory verified"
+    )

@@ -1,0 +1,52 @@
+{
+  "azureCliVersion": "2.89.1",
+  "kubeloginVersion": "0.2.22",
+  "platforms": {
+    "amd64": {
+      "kubectl": {
+        "1.33.5": {
+          "sha256": "6a12d6c39e4a611a3687ee24d8c733961bb4bae1ae975f5204400c0a6930c6fc",
+          "url": "https://dl.k8s.io/release/v1.33.5/bin/linux/amd64/kubectl"
+        },
+        "1.34.1": {
+          "sha256": "7721f265e18709862655affba5343e85e1980639395d5754473dafaadcaa69e3",
+          "url": "https://dl.k8s.io/release/v1.34.1/bin/linux/amd64/kubectl"
+        },
+        "1.35.0": {
+          "sha256": "a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989",
+          "url": "https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl"
+        }
+      },
+      "kubelogin": {
+        "binarySha256": "61c268b79f581d667600ba03c70442ceb089382b9632153e70c884e5283ab022",
+        "member": "bin/linux_amd64/kubelogin",
+        "sha256": "716cbcb1880bca8f0e976b8917d06fcfe04de2c1e737eaaabbb26e2782330119",
+        "url": "https://github.com/Azure/kubelogin/releases/download/v0.2.22/kubelogin-linux-amd64.zip"
+      }
+    },
+    "arm64": {
+      "kubectl": {
+        "1.33.5": {
+          "sha256": "6db7c5d846c3b3ddfd39f3137a93fe96af3938860eefdbf2429805ee1656e381",
+          "url": "https://dl.k8s.io/release/v1.33.5/bin/linux/arm64/kubectl"
+        },
+        "1.34.1": {
+          "sha256": "420e6110e3ba7ee5a3927b5af868d18df17aae36b720529ffa4e9e945aa95450",
+          "url": "https://dl.k8s.io/release/v1.34.1/bin/linux/arm64/kubectl"
+        },
+        "1.35.0": {
+          "sha256": "58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25",
+          "url": "https://dl.k8s.io/release/v1.35.0/bin/linux/arm64/kubectl"
+        }
+      },
+      "kubelogin": {
+        "binarySha256": "1bc5de97671ba689d6c8189619cc919f5504f4a0c0538c60d1bc1e0b152228a8",
+        "member": "bin/linux_arm64/kubelogin",
+        "sha256": "306a31d80af443d06fb71e04d2feaf65a6c9cf2e7e806e87b895b77fe2093ea6",
+        "url": "https://github.com/Azure/kubelogin/releases/download/v0.2.22/kubelogin-linux-arm64.zip"
+      }
+    }
+  },
+  "pythonVersion": "3.11",
+  "schemaVersion": 1
+}

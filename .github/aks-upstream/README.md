@@ -11,10 +11,11 @@ microsoft/skills main
 ```
 
 这是 Git Pack 内的新增 bundle，不是 npm/PyPI 包，不需要新注册微软仓库。
-本次只交付源代码与知识内容，未执行本地平台导入或生产同步，不能宣称 AgentOps-ready。
-修改在干净的 `feature/aks-upstream-bundle` worktree 完成，来源是本技能仓库的
-`origin/main`（基线 `3094665`）；不使用原 topic checkout，也不覆盖其未提交的 `docs/`。
+原知识 bundle 已发布到仓库；当前新增 bound-readonly 执行器候选，仍未完成真实 AKS 的本地平台验收或生产同步，不能宣称 AgentOps-ready。
+当前修改在干净的 `feature/aks-readonly-runtime` worktree 完成，来源是本技能仓库的
+`origin/main`（基线 `b668e72`）；不使用原 topic checkout，也不覆盖其未提交的 `docs/`。
 平台发布仍须另行确认运行容器与 release/hotfix lineage；本机 rehearsal 容器不作为生产版本证据。
+本次实际只读基线、工具验证与未通过的上线门禁见 [RUNTIME-VALIDATION.md](RUNTIME-VALIDATION.md)。
 
 目录职责：
 
@@ -34,7 +35,9 @@ microsoft/skills main
 
 上游是参考数据，不是宿主执行授权。入口 frontmatter 移除并改名为 `guide.md`，防止嵌套 Skill 被发现；
 shell source 转为带 fence 的 `.sh.md`、mode 0644，不安装 collector、hooks 或 MCP。
-不修改既有 guard，不复用其他 bundle 的认证或安装器，不因用户同意而开放实时查询/修复。
+不修改既有 guard，不依赖其他 bundle 的认证或安装器。实时读取仅由本地 `scripts/aks_*.py` 固定接口提供，
+需经过原生凭据、目标/身份核验；绝不因用户同意而运行上游命令或开放修复。运行流程见 bundle 内 `references/connection.md`。
+`runtime-assets.json` 显式列出发布资产；Python 单元测试仍放在 `.github/`，不会进入运行时 bundle。
 
 同步在缺失所选技能、本地引用断开、未选择的跨技能文件依赖、新资产类型、symlink/submodule、
 非 UTF-8/二进制和过大文件时失败。Markdown 支持普通内联/引用链接、空白、标题与尖括号目标；
@@ -87,9 +90,10 @@ python3 -m unittest discover -s .github/aks-upstream/tests -v
 python3 -m unittest discover -s azure-ops/tests -v
 python3 -m venv /tmp/aks-dev
 /tmp/aks-dev/bin/python -m pip install -r .github/aks-upstream/requirements.txt
-/tmp/aks-dev/bin/ruff check .github/aks-upstream
-/tmp/aks-dev/bin/ruff format --check .github/aks-upstream
-/tmp/aks-dev/bin/mypy .github/aks-upstream/*.py
+/tmp/aks-dev/bin/ruff check .github/aks-upstream azure-aks-ops/scripts
+/tmp/aks-dev/bin/ruff format --check .github/aks-upstream azure-aks-ops/scripts
+/tmp/aks-dev/bin/mypy .github/aks-upstream/*.py azure-aks-ops/scripts/aks_*.py
+PYTHONDONTWRITEBYTECODE=1 /tmp/aks-dev/bin/python -m unittest discover -s .github/aks-upstream/runtime-tests -v
 ```
 
 可选：在 Node 24+ 和已有依赖的 QM 源码树旁，使用真实导入器做纯内存兼容检查：
@@ -99,8 +103,11 @@ node .github/aks-upstream/check_qm_ingest.mjs /path/to/qm-source
 ```
 
 先暂存本次文件；该检查用 `git ls-files` 构造仓库快照，调用 QM 的 normalize/ingest/in-memory store，
-核对仅一个 AKS 入口、全部预期文本资产、无共享维护文件和无 requiredCapabilities。
-它不会连接平台、创建 Scope 或访问持久化数据，也不替代发布协调语义与运行时验收。
+核对仅一个 AKS 入口、全部预期文本/本地执行器资产、无共享维护文件，且 requiredCapabilities 仅包含显式的出网域名。
+它不会连接平台、创建 Scope 或访问持久化数据；此外会用真实 Core 协调函数验证两个内存 Scope 的完整保留集、漏选归档、Pack-wide Sync 和旧 ref 回滚。
+原生 HTTP/Keychain/staging 的本地协议检查可设置 `QM_SOURCE_FOR_AKS_TESTS=/path/to/matched-clean-core` 运行 runtime-tests。
+该测试固定匹配的 Core commit，仅用 localhost、内存 store 和映射到私有 fixture 目录的 Sandbox 边界，不访问真实凭据。
+未设置此变量时会明确 skip，不能当作此项通过；仍不替代实际 Project/Scope 和真实 AKS 验收。
 
 [模型/平台行为场景](../../azure-aks-ops/tests/cases.md) 需另行执行；离线单元测试不证明 Scope 隔离或真实集群验收。
 
@@ -118,7 +125,7 @@ Actions 使用完整 SHA；机器人仅提交明确的生成路径，不修改�
 
 先审查命令、特权、工具、网络、依赖和许可证差异。生产前按 workspace AGENTS.md 核验实际
 容器、feature/release、组件 digest 和 hotfix；涉及执行面/平台变更时，必须在匹配 release lineage
-的工作树完成镜像与本地 VM 门禁。本次知识 bundle 不要求重建平台或 Sandbox 镜像，也不豁免本地验收。
+的工作树完成镜像与本地 VM 门禁。本次自包含 bundle 不要求重建平台或 Sandbox 镜像，但执行能力变化必须通过真实原生凭据与 AKS 的本地 VM 验收，不因 fixture 测试通过而豁免。
 
 ### 必须先核验导入器的协调语义
 

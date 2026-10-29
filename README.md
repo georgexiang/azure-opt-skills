@@ -31,8 +31,12 @@ GitHub 改名不等于平台已完成迁移：
 
 新增独立 [`/azure-aks-ops`](azure-aks-ops/SKILL.md)，从 `microsoft/skills` 选择性同步
 `aks-troubleshooting`、`aks-known-issues` 和 `aks-cost-optimization`。
-首期仅分析知识与用户提供的脱敏证据，不执行实时 Azure/Kubernetes 查询、采集或修复；
-不会改变现有 `azure-ops` guard、凭据或 Sandbox 镜像。
+保留 knowledge-only 分析，并新增基于原生 `execute.credentials` 的 bound-readonly 执行器候选：
+检查/安装固定 CLI、tenant-specific device-code 登录并保存 Keychain、申请目标限定的共享用途、自动获取临时 user kubeconfig，
+读取控制面、node pool、节点及指定 namespace 的 Pod/Event 状态。参见 [连接流程](azure-aks-ops/references/connection.md)。
+不执行写操作、读取 Secrets/日志或运行上游 collector；不会放宽现有 `azure-ops` guard，也不需要替换 Sandbox 镜像。
+个人登录限 owner personal 会话；共享需明确批准的 AKS standing grant，不能复用仅 Support 用途的授权。
+只接受本入口捕获、绑定 tenant/object ID 的原生文件登录，不接受任意 resident Azure 缓存或环境 secret。
 
 - 来源范围：[sources](.github/aks-upstream/aks.sources.json)；固定版本：[lock](.github/aks-upstream/aks.lock.json)。
 - 来源、内容校验与适配记录：[`azure-aks-ops/UPSTREAM.json`](azure-aks-ops/UPSTREAM.json)。
@@ -40,7 +44,8 @@ GitHub 改名不等于平台已完成迁移：
 - 发布仍使用当前仓库 Git Pack；首次新增须 Browse/import。已有技能的 Scope 必须保留同 Pack 的完整选择集再追加 AKS，避免被协调归档；`Sync now` 是 Pack-wide，不是单技能更新。
 - 完整维护、验证、发布及回滚步骤见 [AKS 维护指南](.github/aks-upstream/README.md)。维护工具放在 `.github/`，避免被 Git Pack 收集为共享运行时资产。
 
-代码合并、工作流通过不等于已发布或具备实时执行能力。生产须固定本仓库已验证 commit，不能直接跟随上游 `main`。
+代码合并、离线测试通过不等于已发布或真实 AKS 验收通过。执行器仍需要原生凭据接口、最小 RBAC 和集群网络。
+生产须先完成本地 VM 的真实授权/集群/回滚验收，再固定本仓库已验证 commit；不能直接跟随上游 `main`。
 
 ## 目标
 

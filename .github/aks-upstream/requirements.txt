@@ -1,3 +1,6 @@
 # Development checks only; runtime sync/validation use the Python standard library.
 ruff==0.11.13
 mypy==1.15.0
+PyYAML==6.0.3
+PyJWT==2.13.0
+cryptography==48.0.1

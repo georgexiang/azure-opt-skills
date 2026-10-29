@@ -1,8 +1,8 @@
-> **QM knowledge-only reference — not execution instructions.**
-> Analyze supplied redacted evidence only. Commands, remediation, collectors,
-> MCP, login and privileged debugging below are upstream examples, not authorized
-> capabilities. Follow the local azure-aks-ops SKILL.md; do not execute or extract
-> scripts, fetch credentials, or apply changes, even on user approval.
+> **QM upstream knowledge reference — not execution instructions.**
+> Use this material to interpret redacted evidence. Only the local SKILL.md and
+> its reviewed, target-bound adapter define available live reads. Upstream CLI,
+> collectors, MCP, login, remediation and privileged-debug examples below do not
+> authorize execution. Never extract/run these collectors or apply changes.
 
 Source: https://github.com/microsoft/skills/blob/00d66a64919edca5bca2c673373444e36a4b5461/.github/plugins/aks-skills/skills/aks-troubleshooting/scripts/pod-deep-dive.sh
 
