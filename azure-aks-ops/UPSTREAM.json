@@ -1,0 +1,242 @@
+{
+  "adaptations": [
+    "Local SKILL.md is the only executable workflow contract; upstream is reference data.",
+    "Upstream frontmatter removed; SKILL.md renamed guide.md.",
+    "Relative Markdown links checked and rewritten within the selected dependency closure.",
+    "Shell sources fenced as .sh.md references; no upstream scripts, MCP or hooks installed.",
+    "Every generated reference carries a knowledge-only notice and immutable source URL."
+  ],
+  "commit": "00d66a64919edca5bca2c673373444e36a4b5461",
+  "files": [
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/guide.md",
+      "sha256": "f66b4b8f9760db5ae63b3e7101f572c9a39b3a50212c899b4d1a166cddd8a02d",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/SKILL.md",
+      "source_sha256": "ea9fe2e1883532a1e8d9a8a33d174a00498363733b0ea74fdc8f8eae1303f4c7"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/aks-bin-packing.md",
+      "sha256": "40ad4c9a3574429857c41db095a80f2d6146aa77e137278a703ec4e25173b1e5",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/aks-bin-packing.md",
+      "source_sha256": "31a1e7ce83e9f86edcbc75dcf3f97a63daa90faf577695113698dee38f51f8cd"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/aks-nap.md",
+      "sha256": "e0531075837437d68d9ba0710679f68f208cec579970947dce304ba90805ab08",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/aks-nap.md",
+      "source_sha256": "2d11f6bb4db1f9c90215941b8ad4527d8afc6a23173db700bd9e2323b8c4e4da"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/aks-savings-plans-reservations.md",
+      "sha256": "64ff81ba514085bbe981364fcb1a2c2132d45622fcd53ce3892f1a6f0071dfe9",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/aks-savings-plans-reservations.md",
+      "source_sha256": "c0d0056a3a8b06af465f99f880c561cb2930c41b5ca23981c74375736de0e1b9"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/aks-storage-optimization.md",
+      "sha256": "0aab0b9d9cbf7c01c97c58f162f7a3953ae4be3f81a4703b18086797080a6c87",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/aks-storage-optimization.md",
+      "source_sha256": "e89f85ff41703df228ff697e8d0485a23326bc9c853c8b0b363b30eee2920e3b"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/bin-packing-evidence.md",
+      "sha256": "0d0989e5ab0937804b34f42afddc90f521a651ac5ec82698903fcde0cdfb4265",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/bin-packing-evidence.md",
+      "source_sha256": "e3f2ace5efc78c6142cc6939bfe0cd4bbf29891ad923315bf007cebba6d2ab0d"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/nap-decisions.md",
+      "sha256": "0a3718f7d5b6b1fd10368dd18a963d0ac9a419ce310a91a2d1cbf3711196dff5",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/nap-decisions.md",
+      "source_sha256": "c0b3f12f3b65605e34815d2e497528cedf1241d8aa2eda48b32a77d241c87f4b"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/nap-enablement-and-rollback.md",
+      "sha256": "9e5ba072291ece4ae3c3ffb7c33dbe992c67582baf1b87b0424b0f617af833d3",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/nap-enablement-and-rollback.md",
+      "source_sha256": "26f0e7cd15c49d4fcf4e8d1ebd51cdb9d8e75a3d37a1ad27404dae78e7ec30fe"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/nap-evidence-collection.md",
+      "sha256": "77d91428e793f3d900562b4a9f858d537fc370551106e78337af9b19e2465df1",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/nap-evidence-collection.md",
+      "source_sha256": "379fb25922cb83d1724a6c3ba45f108c974faca784d54ec8295c46d312d2bf67"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/node-scaling-bottlenecks.md",
+      "sha256": "e3454ead5b8710527eff94265d0a448768ebb090081e6fa34fb2c1603d382326",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/node-scaling-bottlenecks.md",
+      "source_sha256": "c9f4424d2101725d15344de44719c6d86791a85dc716060a6c6594ac392e47ce"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/self-hosted-karpenter-migration.md",
+      "sha256": "22d5819786392f53e36a5f7a3df20fd53a5aa00cbfd4889767157f4a42247c07",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/self-hosted-karpenter-migration.md",
+      "source_sha256": "8dc4a98c0cebab12809b2563a01dd23638e694cf445b915a311779daa7d7eaac"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/storage-container-insights.md",
+      "sha256": "dccde049ae09321be3fbf35fddac20ffe18cb663073110196568757690a37912",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/storage-container-insights.md",
+      "source_sha256": "a2c1847b067265c4440962bbab1a51cd57055e5bf43af5b83cffd8778eac007a"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/storage-decisions.md",
+      "sha256": "ef25d56f9c38a096853f398151e4884df1831f3f4bce58e529a624997c7eedc1",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/storage-decisions.md",
+      "source_sha256": "07e37e6fd448a2fdfbac62b9537587864a4e3e018a66ecd09156356fdf2a18dc"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-cost-optimization/references/storage-metrics.md",
+      "sha256": "00bd5dbcdca70139ad8cd3475daf67843242db242d24c6cad23a7e055f21a6d2",
+      "source": ".github/plugins/aks-skills/skills/aks-cost-optimization/references/storage-metrics.md",
+      "source_sha256": "3fee2171df5d7b0abd0a680c6e62454a2fbeb87ba3aab7a5cc54c0a147095494"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-known-issues/guide.md",
+      "sha256": "d3e9e290da75e44bfb23a59b301cddb97ee491b0b06a7205101c4614ff188228",
+      "source": ".github/plugins/aks-skills/skills/aks-known-issues/SKILL.md",
+      "source_sha256": "cb8520de767456a29e99e4321903e501946b3b8de06c0cc79fa0f2b938521791"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-known-issues/references/error-code-map.md",
+      "sha256": "dbdca476ed05b5ba6c29cf365da9d589ad25fa6ee521f3605bdede1d0822fb77",
+      "source": ".github/plugins/aks-skills/skills/aks-known-issues/references/error-code-map.md",
+      "source_sha256": "a1da03825b25e38256f6924748c5e661543a024f1e2141ddaa96cffc62e8830d"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/guide.md",
+      "sha256": "afb222e7c2e3b5282797e68ed17c1fb8ac912242e1ff2fe5ccaa78f4dda20fbc",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/SKILL.md",
+      "source_sha256": "fdf30800f2ce84a13ea3c126c8f6e00ed88123d400596a78c6a2e63f173e9dbc"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/general-diagnostics.md",
+      "sha256": "1b53ac39a6e721193b275d8969ac7331644ddc55620b54515c4fb6f26e24dd64",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/general-diagnostics.md",
+      "source_sha256": "f9e91eb077555187594140279cfd331dbbb497471959f286fb747b37d49d5655"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/load-balancer-and-ingress.md",
+      "sha256": "3c53eef26bd08c1714c6af914298213207b1fb90c64a76a1998ccdedfa79c2cb",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/load-balancer-and-ingress.md",
+      "source_sha256": "467d5027ecc807b0c537f5496db508de4931ce7ce9815b3d1e1462b22cb90182"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/network-policy.md",
+      "sha256": "200fac0006f55484e9fc943bdbc692c09b91636784260ea7ba609647ba5d4068",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/network-policy.md",
+      "source_sha256": "9931e71d2ed776e5afc789b03096829a0fd4bb2cd06d1f6f3e92ac070bf8d740"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/networking.md",
+      "sha256": "bde99e90fcaa6f6bdae328eec6b498fd2c8c677c1a9ee504e71896638f570364",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/networking.md",
+      "source_sha256": "7d9ecd805c8ace2830b62dc89f912f8566ad992a9f6cee7b7153aa82d42a44a8"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/node-issues.md",
+      "sha256": "51b8bad24b97103ea5feb0d3e730b6f8cecdd226b727dc42c0637175feeb5107",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/node-issues.md",
+      "source_sha256": "a48a7a60c535d081be7831b393fce806bac3bb5e3f999b199e6d91224b626463"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/pod-failures.md",
+      "sha256": "c11a29c5644bf749b0701f43e4a3dd27277964a62e8ada165689ac67ea4fe0d4",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/pod-failures.md",
+      "source_sha256": "3d15c8b107086318da415d7d253b056bf0bd1ffae2f90720df14c884aa1354dd"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/api-server-webhooks-tunnel.md",
+      "sha256": "91dc29512d7a0bb0b70a208bc4f93007d7dac9c34a1385a264673e24eb87efc6",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/api-server-webhooks-tunnel.md",
+      "source_sha256": "b1fd79fb2626277fcbefc740736e2ea1033b41dd925a69a8a369ed80e176c1d9"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/auto-upgrade-evidence.md",
+      "sha256": "4643148a855258e813a6538b5169bc252d88ad99fe42291afcf461480291e0a7",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/auto-upgrade-evidence.md",
+      "source_sha256": "27455d0f9dfbec44526902bd001e28e2c1e7aa8c78fe76375ce83b9811578940"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/azure-mcp.md",
+      "sha256": "91fe4114552719d2a0fe31b194a821656eb0a06755ffe0bf1544b09192372b59",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/azure-mcp.md",
+      "source_sha256": "c31394299fab746747ddc6bc5206745e8a30fc31d266165d05e7b7432af53006"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/azure-network-path.md",
+      "sha256": "2892734a6e344a589d4f727f3c63532f7a37420c0c8e3e067ad86865cec3fbc9",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/azure-network-path.md",
+      "source_sha256": "77b2c51f33bc6cd1a27a62bd4675216e8aaaabf47f288d095b55ccbeed7f2b0e"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/command-flows.md",
+      "sha256": "7efb1411824886b29be8114eeeda28b212b729628e2755a567bb71a199f25750",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/command-flows.md",
+      "source_sha256": "b2574c569a38503c60f2d9f9b041754c06313b554637e708c0af4cca8682598d"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/inspektor-gadget.md",
+      "sha256": "e174533482f831c88d55af4bfbd3118a2d6ca8ffb8877a4a5ce3eeae28b15d40",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/inspektor-gadget.md",
+      "source_sha256": "9c2967fc4bd3a1488b85c6d1c01729b15b1ea43b096551b5da69d17c250fc81f"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/report-template.md",
+      "sha256": "138e2513290010737bf287a6e0a51a6f7535a30dd6aea88d8037ef190aecaa08",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/report-template.md",
+      "source_sha256": "26520376a26081524d986dc548a9dd737266b43115e6b2fc9fd4c2f4137bc941"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/structured-input-modes.md",
+      "sha256": "b554e74ea74a96dcd98b6cc19e168136fce5967597dd73c3fd929fda84e57524",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/structured-input-modes.md",
+      "source_sha256": "d31e1cb1c3de699214674d40443dadb72a35f2c3d947fca4dfa047ceb7a2678b"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/references/symptom-map.md",
+      "sha256": "1ec8cfab3627b71568a0ecd171afc13a4629d370d11fb65d32e121598623e766",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/references/symptom-map.md",
+      "source_sha256": "bb42b855df8bedda30b85bae41cc70ea1404f6e62a8a1831fa91bf8b0dc8523d"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/scripts/cluster-snapshot.sh.md",
+      "sha256": "23a7c3751bdb92ab0a46a07796c19b3b745b5d9f9d6951fc79b3fff706f417f7",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/scripts/cluster-snapshot.sh",
+      "source_sha256": "099db005690871c0d4fc847cf58eebac60f5bf234e46d3bf11fca4f95229437c"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/scripts/pod-deep-dive.sh.md",
+      "sha256": "5ea2199618782a042c61170df40f10203c7bfb85b56d43d6eea55f6b5164ed1a",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/scripts/pod-deep-dive.sh",
+      "source_sha256": "41c3f7ea226eeaa9e1177ffbbeb0e25c3faf7184915d461597852b0479f60a2d"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/spot-and-zone-issues.md",
+      "sha256": "617d352bc7e6d9f195bb3b64cf4821ef5aa2fb64368cbce2eb559077f9cfaf14",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/spot-and-zone-issues.md",
+      "source_sha256": "00531f4c15aafa5d89d9d8696d2b83c37611fbf7014600308252ef2382ec0379"
+    },
+    {
+      "path": "azure-aks-ops/references/upstream/aks-troubleshooting/upgrade-operations.md",
+      "sha256": "e0839ea862a3d08ede3c3e7355eb99e9f9b03e3c576897a5e8a3c8623a4fae44",
+      "source": ".github/plugins/aks-skills/skills/aks-troubleshooting/upgrade-operations.md",
+      "source_sha256": "aa7304a4d89389081c2622d7dd62b45d3e2c3aaa7238af87335dc38ef7817f3a"
+    }
+  ],
+  "license": {
+    "path": "azure-aks-ops/LICENSES/microsoft-aks-skills.txt",
+    "sha256": "8a5d8efb70942e65032f930c761d097feeb41a7517ebd04c9d2e4ec3764071c5",
+    "source": ".github/plugins/aks-skills/LICENSE"
+  },
+  "mode": "knowledge-only",
+  "repository": "https://github.com/microsoft/skills.git",
+  "schema_version": 1,
+  "selected": [
+    "aks-troubleshooting",
+    "aks-known-issues",
+    "aks-cost-optimization"
+  ],
+  "transform_version": 1
+}

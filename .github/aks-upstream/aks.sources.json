@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/microsoft/skills.git",
+  "branch": "main",
+  "plugin": ".github/plugins/aks-skills",
+  "selected": [
+    "aks-troubleshooting",
+    "aks-known-issues",
+    "aks-cost-optimization"
+  ],
+  "mode": "knowledge-only"
+}

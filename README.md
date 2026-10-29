@@ -27,6 +27,21 @@ GitHub 改名不等于平台已完成迁移：
 
 后端尚未支持新名称的已部署环境，应暂时保留已验证的旧 pack 提交和 Skill，不要直接切换。此次仓库改名不增加自动化导入权限，也不将用户附件校验改为接受 Loop 生成文件。
 
+## AKS Skills：跟踪上游并通过同一 Git Pack 发布
+
+新增独立 [`/azure-aks-ops`](azure-aks-ops/SKILL.md)，从 `microsoft/skills` 选择性同步
+`aks-troubleshooting`、`aks-known-issues` 和 `aks-cost-optimization`。
+首期仅分析知识与用户提供的脱敏证据，不执行实时 Azure/Kubernetes 查询、采集或修复；
+不会改变现有 `azure-ops` guard、凭据或 Sandbox 镜像。
+
+- 来源范围：[sources](.github/aks-upstream/aks.sources.json)；固定版本：[lock](.github/aks-upstream/aks.lock.json)。
+- 来源、内容校验与适配记录：[`azure-aks-ops/UPSTREAM.json`](azure-aks-ops/UPSTREAM.json)。
+- 自动化：每周检查上游并提出更新 PR，不自动合并或同步生产；未选择的新技能仅列入清单供评审。
+- 发布仍使用当前仓库 Git Pack；首次新增须 Browse/import。已有技能的 Scope 必须保留同 Pack 的完整选择集再追加 AKS，避免被协调归档；`Sync now` 是 Pack-wide，不是单技能更新。
+- 完整维护、验证、发布及回滚步骤见 [AKS 维护指南](.github/aks-upstream/README.md)。维护工具放在 `.github/`，避免被 Git Pack 收集为共享运行时资产。
+
+代码合并、工作流通过不等于已发布或具备实时执行能力。生产须固定本仓库已验证 commit，不能直接跟随上游 `main`。
+
 ## 目标
 
 1. 将源仓库中的 Azure Skills 合并为一个 QM Skill。

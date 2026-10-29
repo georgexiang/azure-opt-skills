@@ -2,7 +2,7 @@
 name: azure-ops
 description: >-
   使用中文或英文诊断并解释 Azure 运维问题。适用于 Azure VM 全面健康检查、CPU、内存、磁盘、网络、
-  Resource Health、订阅级 Service Health、主机名或 VM 资源查询、Azure 产品问题，以及生成 Azure
+  Resource Health、订阅级 Service Health、主机名或 VM 资源查询、AKS 运维问题移交、Azure 产品问题，以及生成 Azure
   Support 工单草稿；实际提交需移交独立的 azure-support-ticket Skill 或批准的外部流程。
 requiredCapabilities:
   - egress:login.microsoftonline.com
@@ -30,8 +30,11 @@ requiredCapabilities:
 | 主机名、计算机名、VM 名称或资源 ID 查询                           | `vm lookup`                                    | `references/health-and-lookup.md` |
 | Azure 概念、产品、SKU、配额、价格、区域、对比或用户粘贴的错误解释 | `qa`                                           | 仅阅读本文件                      |
 | 生成 Azure Support 工单草稿或准备提交                             | `support-case`                                 | `references/support-case.md`      |
+| AKS 故障、已知问题或集群成本优化                                  | 移交独立 `azure-aks-ops`                        | 按下述 AKS 移交规则               |
 
 用户要求实际提交时，本 Skill 仍只生成草稿；在当前会话将已确认事实交给独立的 `azure-support-ticket` Skill，由其核验当前 Project 凭据、目标权限并重新确认提交，可直接在当前项目 Sandbox 执行。若未导入该 Skill，则使用 Azure Portal 或组织批准的外部流程。下述只读命令与身份限制适用于 `azure-ops` 诊断流程，不禁止独立提交 Skill 使用本项目获授权的 Support 写权限身份。
+
+AKS 请求先检查当前宿主是否已导入 `azure-aks-ops`，存在则移交并完整阅读其入口；它首期仅分析知识与用户提供的脱敏证据，不提供实时集群检查或修复。若未安装，说明需从同一 Git Pack 显式导入；不要猜测其他 bundle 的文件路径，不运行 VM 分支或绕过 guard 来补齐 AKS 执行能力。本文后续 VM 实时操作契约不适用于该移交分支。
 
 选择模式分析时，还要先阅读该模式依赖的基础 reference，并复用其中的查询结果。不要把服务范围的故障问题当作 VM Resource Health 请求。不要把主机名查询当作诊断。Guest 进程、文件系统、应用日志或非 VM 实时诊断请求超出实时诊断边界；应说明限制，并建议相关的 Azure 原生诊断入口。
 

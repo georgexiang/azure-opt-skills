@@ -1,0 +1,48 @@
+name: Propose AKS upstream update
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aks-upstream-update
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Generate proposal from immutable upstream Git blobs
+        run: python3 .github/aks-upstream/sync_aks_upstream.py --update --summary "$RUNNER_TEMP/aks-update.md"
+      - name: Validate bundle and run regression tests
+        run: |
+          python3 .github/aks-upstream/validate_aks_bundle.py
+          python3 -m unittest discover -s .github/aks-upstream/tests -v
+          python3 -m unittest discover -s azure-ops/tests -v
+          git diff --check
+      - name: Open or update review PR (never merge or deploy)
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          branch: automation/aks-upstream
+          commit-message: "chore: refresh selected AKS upstream knowledge"
+          title: "chore: update AKS upstream knowledge bundle"
+          body-path: ${{ runner.temp }}/aks-update.md
+          add-paths: |
+            .github/aks-upstream/aks.lock.json
+            azure-aks-ops/references/upstream
+            azure-aks-ops/LICENSES/microsoft-aks-skills.txt
+            azure-aks-ops/UPSTREAM.json
