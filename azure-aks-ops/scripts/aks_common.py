@@ -77,7 +77,7 @@ def credential_home() -> Path:
     home = Path(os.environ.get("HOME", ""))
     require(
         home.name == "home"
-        and bool(re.fullmatch(r"qm-credentials\.[A-Za-z0-9]+", home.parent.name))
+        and bool(re.fullmatch(r"qm-credentials\.[A-Za-z0-9_-]+", home.parent.name))
         and home.parent.parent == Path("/tmp"),
         "CREDENTIAL_NOT_STAGED",
         "Use the platform execute.credentials file handle; resident HOME/cache is not accepted",
@@ -88,11 +88,11 @@ def credential_home() -> Path:
     real_private(config)
     require(
         all(
-            p.name in PROFILE_FILES and p.is_file() and not p.is_symlink()
+            not p.is_symlink() and (p.name not in PROFILE_FILES or p.is_file())
             for p in config.iterdir()
         ),
         "PROFILE_DENIED",
-        "Re-login with aks_auth.py; staged profile contains unsupported cloud/config/plugin or binary cache files",
+        "Staged Azure profile contains unsafe login files or symlinks",
     )
     require(
         os.environ.get("AZURE_CONFIG_DIR", str(config)) == str(config),
@@ -104,11 +104,9 @@ def credential_home() -> Path:
 
 @contextmanager
 def clean_profile(home: Path) -> Iterator[None]:
-    try:
-        yield
-    finally:
-        # Never persist cloud overrides, executable extensions or MSAL pickle
-        # caches introduced by the CLI. Keep only the two captured JSON roots.
+    def prune() -> None:
+        # Generic interactive-login saves CLI config too. Remove it before the
+        # CLI can load cloud overrides, plugins or executable pickle caches.
         config = home / ".azure"
         real_private(config)
         for path in config.iterdir():
@@ -117,6 +115,12 @@ def clean_profile(home: Path) -> Iterator[None]:
                     shutil.rmtree(path)
                 else:
                     path.unlink()
+
+    prune()
+    try:
+        yield
+    finally:
+        prune()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -356,6 +360,12 @@ def authorize(
                     str(approved.get(key, "")).lower() == str(target[key]).lower(),
                     "TARGET_DENIED",
                     "Requested cluster is outside the approved purpose",
+                )
+            if target.get("objectId"):
+                require(
+                    approved.get("objectId") == target["objectId"],
+                    "IDENTITY_MISMATCH",
+                    "Requested Azure object ID differs from the approved purpose",
                 )
             namespaces = approved.get("namespaces")
             require(

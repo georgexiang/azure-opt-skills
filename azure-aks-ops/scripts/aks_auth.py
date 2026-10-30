@@ -243,6 +243,7 @@ def parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("request-access")
     ask.add_argument("--credential-id", required=True)
     ask.add_argument("--tenant", required=True)
+    ask.add_argument("--object-id")
     ask.add_argument("--subscription", required=True)
     ask.add_argument("--resource-group", required=True)
     ask.add_argument("--cluster", required=True)

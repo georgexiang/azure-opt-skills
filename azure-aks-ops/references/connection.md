@@ -45,7 +45,11 @@ Azure CLI 固定 2.89.1；kubectl 固定 1.33.5、1.34.1、1.35.0；kubelogin �
 先读取当前宿主原生凭据目录。使用可见 execution handle，不把 credential ID 当成 handle，也不按聊天姓名猜 Azure 账号。
 `GET /v1/keychain/credentials` 只返回当前 owner 的元数据；共享来源以当前 catalog/grant 为准，不搜索其他 Project 的缓存。
 
-没有匹配 Azure 文件登录时，先确认 tenant UUID，再在同一 Sandbox、不带 credentials 的后台任务运行：
+`interactive-login` 保存并返回的 Azure 文件 handle 可直接使用，不因 service 名称不是 `azure-aks-*` 要求重新登录；每条命令仍显式带 `execute.credentials`，不使用旧 HOME 缓存。个人 owner 可用 `accounts` 核验签名后的 tenant/object ID；通用 handle 共享到 Project 时，所有者必须在下节 AKS purpose 中批准这个不可变 object ID，不能仅按账号显示名绑定身份。
+
+缺少匹配登录或用户明确要求重登时，先确认 tenant UUID，可完整读取宿主 `interactive-login`，按其临时 HOME、后台 device-code、保存并取得句柄的流程执行。使用上节 `<azure_python>` 的绝对路径运行 `-I -m azure.cli login --tenant <tenant-uuid> --use-device-code --allow-no-subscriptions --output none`，HOME/XDG 和 AZURE_CONFIG_DIR 全部指向全新临时 HOME；登录与保存使用同一 sandbox_id，不带旧 credentials。新账号优先用新 service slot，同一 service 的保存会保留旧 grants，只有确认同一身份或所有者明确批准更换共享身份才替换旧 slot。保存失败按原生 Skill 重试，不宣称登录已持久化。
+
+也可使用本 bundle 的 Azure 专用隔离登录适配器，它自动验证身份并使用 tenant/object ID 绑定的 slot；此脚本与原生 `interactive-login` 的结果都进入同一个 native credential catalog：
 
 ```text
 <azure_python> -I <skill-dir>/scripts/aks_auth.py login --tools-root <toolchain-root> --tenant <tenant-uuid>
@@ -55,7 +59,7 @@ Azure CLI 固定 2.89.1；kubectl 固定 1.33.5、1.34.1、1.35.0；kubelogin �
 只转达输出中的 verification URL、一次性 code 和进度，不停止正在等待用户批准的后台任务。
 登录成功后脚本核验 tenant/cloud，在进程内读取身份 claims，直接通过 native Keychain 保存允许的 `.azure` 文件。
 服务 slot 包含 tenant 和 Azure object ID，避免重新登录另一个 Azure 账号时无意继承原账号的共享 grants。
-运行器只接受这种绑定的 file handle；通用 Azure 登录、环境 secret 或旧 resident cache 必须通过本入口重新登录，不凭名称猜身份。
+专用绑定 handle 保持向后兼容；通用 Azure 文件 handle 按实际 token 身份和 owner/grant 校验，不凭 service 名称猜身份。环境 secret 或旧 resident cache 不是替代入口。
 仅保存 `azureProfile.json` 与 `msal_token_cache.json`；不保存 cloud/config 覆盖、插件或可执行反序列化的 HTTP 二进制缓存。
 只输出 handle/credential ID、非敏感身份与订阅清单；token、MSAL cache 不进入对话或日志。
 临时 HOME 无论成功失败都会清理；保存失败需重新登录，不复用残留 profile。不要让用户上传 kubeconfig 或 secret。
@@ -74,6 +78,7 @@ Azure CLI 固定 2.89.1；kubectl 固定 1.33.5、1.34.1、1.35.0；kubelogin �
 按需重复 `--namespace`；未批准集群级节点读取时省略 `--cluster-read`。权限范围应最小化。
 脚本通过 `/v1/keychain/asks` 提交结构化 purpose，所有者仍须在平台原生卡片审批；脚本不会批准自己。
 purpose 是固定 JSON，包含 `kind: azure-aks-readonly/v1`、tenant、subscription、resourceGroup、clusterName、namespaces、clusterRead。
+通用 `interactive-login` handle 的申请还必须传入 `--object-id <所有者已核验的Azure-object-uuid>`，将其写入冻结 purpose 的 `objectId`；使用 `accounts` 得到的已验签身份或可信 owner 记录核对，不能用聊天用户 ID 或猜测值。缺少这一批准时停止并请求 owner 完成身份绑定，不静默复用旧 grant。绑定式 `azure-aks-<tenant>-<oid>` handle 的既有授权无需改变。
 Support、数据刷新、其他集群或自由文本用途的旧 grant 不会被静默扩大。
 平台若返回不同冻结 purpose/mode 的旧 ask，停止并让 owner 先处理旧申请；不改 grant、不换来源绕过去重。
 
@@ -89,7 +94,7 @@ Support、数据刷新、其他集群或自由文本用途的旧 grant 不会被
 每次调用下面的固定命令时，**同一个 execute** 必须填写 `credentials: [所选handle]`，按当前 catalog 填写 execution scope 和 sandbox_id。
 预计超过前台时限时用 `execute(background:true, credentials:[...])` 一次启动，后续仅 poll/watch 该 process_id；不要重启第二个诊断进程。
 本地脚本先让 Core API 验证同一个 capability token，再解码其 actor/scope claims，拒绝用 `--scope` 冒充另一会话。
-它取得实际 ARM token，通过固定 Microsoft tenant JWKS 核验 RS256 签名、issuer、audience、有效期，再核验 tenant/object ID 与 handle 中的固定身份一致，避免把 A 的 grant 套到 B 的缓存上。
+它取得实际 ARM token，通过固定 Microsoft tenant JWKS 核验 RS256 签名、issuer、audience、有效期，再核验 tenant/object ID 与 handle 中的固定身份或共享 purpose 的 objectId 一致，避免把 A 的 grant 套到 B 的缓存上。个人 owner 的通用 handle 返回实际验签身份；共享通用 handle 缺少 owner 批准的 objectId 时，在任何 Azure CLI 调用前停止。`account show` 只读本地元数据，不代替 token 验签和实际 ARM 请求。
 签名公钥读取失败也停止，不把仅解码 JWT payload 当成身份验证，不使用 profile 自定义 cloud endpoint。
 不要单独加载凭据后再在另一条不带 credentials 的命令复用临时路径；每次执行都重新通过原生授权。
 按宿主实际工具 schema 提供 command，参数逐项传递/引用，不把用户文本拼成 shell 语法。示意命令：
@@ -115,7 +120,7 @@ Support、数据刷新、其他集群或自由文本用途的旧 grant 不会被
 
 ## 5. 自动获取连接配置与权限/网络
 
-运行器只接受 native 暂存的 `/tmp/qm-credentials.<随机值>/home/.azure`，拒绝 resident profile 和任意外部 AZURE_CONFIG_DIR。
+运行器只接受 native 暂存的 `/tmp/qm-credentials.<随机值>/home/.azure`，拒绝 resident profile、符号链接和任意外部 AZURE_CONFIG_DIR。通用 interactive-login 可能包含 config、clouds.config、命令日志或 HTTP 二进制缓存；运行器在 CLI 启动前删除非允许内容，只让 Azure 加载两个 JSON 登录文件，执行后再次清理，不反序列化这些附加缓存。工具固定绝对路径保持在持久 HOME，认证 HOME 保持临时；所有三个 Azure Skill 都不依赖上次 execute 的 export。
 它实时核验 tenant/subscription/Enabled/AzureCloud 和完整 AKS resource ID，再在该次执行的 private 目录内获取 user kubeconfig。
 不使用 `--admin`，不覆盖默认 config，不执行下载 kubeconfig 中的 exec/auth-provider，不接受外部 CA 文件、代理覆盖或 insecure TLS。
 核对 server 与 ARM fqdn/privateFqdn 一致后，用其 CA 重建固定、绝对路径的 kubelogin Azure CLI provider。
@@ -126,7 +131,7 @@ Azure ARM Reader、获取 user kubeconfig 的 action、Kubernetes 数据面授�
 `kubectl version` 还需要可访问 server version。Private AKS 必须有实际 DNS/私网连通性；管理员为集群 API hostname 配置出网策略，不能假定固定 ARM 域名白名单足够。
 
 kubeconfig 和发现缓存位于 native execution 目录中、HOME 之外，不写回 Keychain；执行结束删除，原生进程回收再清理整个暂存目录。
-Keychain 仅保留两个允许的 Azure JSON 登录文件；每次执行清理 CLI 产生的配置、插件或 HTTP 二进制缓存，防止下次执行加载不可信覆盖。
+专用登录入口仅保存两个允许的 Azure JSON 登录文件；通用 interactive-login 的附加内容在首次 AKS 执行前清理，每次执行后再次清理 CLI 产生的配置、插件或 HTTP 二进制缓存，防止下次执行加载不可信覆盖。
 owner 刷新由平台回写，grant 的刷新不持久化。授权撤销/过期、401、403、网络失败时停止，不尝试替换身份或提权。
 
 ## 输出与故障边界

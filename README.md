@@ -148,19 +148,27 @@ https://github.com/georgexiang/azure-opt-skills
 
 注册后选择 `Browse skills...`，并将 `azure-ops` 导入目标 Scope。仓库更新后使用 `Sync now`。无需构建或替换 Sandbox 镜像。
 
-如需实际提交，另行导入 `azure-support-ticket` bundle。它包含提交 reference、错误证据 helper，以及独立可用的 CLI 安装器、依赖哈希锁、`azure_cli_env.sh` 和 `azure_cli.sh`；不依赖另一个 Skill 的文件路径。Support 先经 `bash skills/azure-support-ticket/scripts/azure_cli.sh --check` 自检，失败时后台运行同一入口的 `--ensure` 并等待，再次自检成功才加载凭据。所有 Support Azure 命令均经过该入口，自动定位非默认扩展目录，沿用已选择的 `AZURE_CONFIG_DIR`，不依赖上次会话 export 或系统 `az`。安装不加载凭据，普通调用不隐式安装或重试；现有项目可复用原安装，无需重新登录。缺少身份时按 Skill 执行 tenant-specific device-code 登录；导入或安装工具本身不授予 Azure 权限。
+如需实际提交，另行导入 `azure-support-ticket` bundle。它包含提交 reference、错误证据 helper，以及独立可用的 CLI 安装器、依赖哈希锁、`azure_cli_env.sh` 和 `azure_cli.sh`；不依赖另一个 Skill 的文件路径。Support 先在不带 credentials 的持久 HOME 经 `bash skills/azure-support-ticket/scripts/azure_cli.sh --check` 自检，失败则后台 `--ensure` 并等待复检。记录实际 Skill 绝对路径与持久 `<tools-home>`；每条 Azure 操作经 `azure_cli.sh --tools-home <tools-home>`，同时在 `execute.credentials` 显式选择文件句柄。该选项只定位工具，不改变平台暂存的认证 HOME。缺少身份或用户要求重登时，按宿主 `interactive-login` 在全新临时 HOME 登录并保存到 Keychain；保存不自动授权 Project。普通调用不隐式安装、登录或重试。
 
 两个 Azure bundle 中的 `azure_cli_env.sh`、`azure_cli.sh`、`install_azure_cli.sh` 与依赖锁是同一工具链的打包副本，以便 subset 导入后独立运行。维护时在 `azure-ops/scripts` 更新后同步到 `azure-support-ticket/scripts`；行为测试强制四项字节一致。版本与路径只在每个 bundle 的 `azure_cli_env.sh` 定义，安装器检查通过实际执行入口验收。`azure-ops` 的诊断命令仍经过只读 guard，不改用 Support 直接执行流程。
+
+### 三个 Azure Skill 的凭据契约
+
+`azure-ops`、`azure-support-ticket` 和 `azure-aks-ops` 共用宿主原生 `execute.credentials` 文件凭据机制：发现当前 execution handle → 核验 owner/Project grant 和用途 → 每条命令显式选择同一句柄 → 核验实际 Azure 身份与目标。credential ID 用于申请、grant ID 用于检查授权，均不是执行句柄。工具安装不带 credentials；工具路径持久，认证 HOME 临时。旧 `/v1/keychain/use`、项目 HOME 缓存和 memory 路径都不是替代入口。
+
+宿主 `interactive-login` 保存成功后返回的 Azure 文件 handle 可用于这三个 Skill；每个 Skill 仍核验自己的用途和权限，不互相扩权。新登录不自动共享给 Project；换 Azure 账号时优先创建新 service slot，避免同 service 替换保留另一身份的旧 grants。AKS 通用 handle 的共享授权还须显式批准 Azure objectId，运行器核验签名与该 ID；旧的身份绑定式 AKS handle 继续兼容。VM 保留只读 guard，AKS 保留集群/namespace 约束，Support 保留每张工单的完整确认与查重。
+
+验收分别证明：句柄与项目授权有效、平台原生暂存/清理成功、目标 Azure/Support/AKS 实际只读请求成功；`account show` 仅证明本地元数据。授权撤销、身份不匹配、scope 冲突或回收失败时停止，不回退其他缓存。源码修改或 Git Pack 同步状态不代表已上线；发布应核对三个实际 Skill 的来源提交与物化内容，并在新会话只读验证，不重复创建已有工单。
 
 ### 多租户 Support 提交流程
 
 `azure-support-ticket` 将 Project 视为多租户、多订阅执行环境，而不是把当前 Azure CLI 默认订阅当作提交目标：
 
-1. 先检查当前 Project 的 Azure CLI profile，再用目标信息搜索 Project memory 中的非敏感 Support profile 映射；没有映射也检查已有登录。
+1. 先发现平台当前可见的 Azure execution handle，再核验 Project grant 和 Support 用途；没有 memory 也检查可用句柄。
 2. 实时核验每个候选 profile，并在提交前展示当前 Project 可访问的 tenant/subscription 清单及本次选中项。
-3. 目标 subscription 没有匹配身份时，先取得正确 tenant ID，再在当前 Project 中执行显式 `--tenant` 的 device-code 登录。
+3. 目标 subscription 没有匹配身份或用户明确要求重登时，取得正确 tenant ID，通过 `interactive-login` 隔离登录并保存，再核验 Project 使用授权。
 4. 登录后固定目标 subscription，重新核验清单、Support extension、provider、服务目录和可读取的写入权限。
-5. 仅保存 tenant/subscription/profile 路由信息；认证材料留在批准的 resident profile 中。
+5. 仅保存 tenant/subscription/label/handle 路由信息；认证材料留在 Keychain，不保存原生执行的临时路径。
 
 该流程修复了以下失败模式：
 
@@ -217,13 +225,13 @@ QM Local Sandbox 会将整个 `$HOME` 存储到 Scope 专属卷中，因此安�
 
 1. 由操作人员为目标 Scope 配置 Azure 身份。不要通过聊天发送密钥、证书或令牌。
 2. 每次操作先校验当前租户、订阅与调用身份。
-3. Azure CLI 使用 `$HOME/.azure` 作为缓存目录，QM 会按 Scope 进行捕获与恢复。
+3. 原生文件登录由 Keychain 保存；每次执行通过 `execute.credentials` 暂存到私有 HOME 并由平台回收，不依赖项目持久 `$HOME/.azure`。
 4. `azure-ops` 诊断身份通过 Azure RBAC 保持只读；独立提交 Skill 的身份需要目标 Support 写权限。
 5. 出网策略需允许 Azure 登录、ARM、PyPI 及 Azure CLI extension 下载端点。
 
 Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目标 Support 权限授权，不能通过命令别名绕过。生产环境优先使用 service principal 或 managed identity。仅在 Conditional Access 允许时，才可用 Device Code 进行临时交互式登录。
 
-对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员可以通过 **Admin → Shared service credentials → Env delivery** 配置 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID` 和 `AZURE_OPS_CLIENT_CERTIFICATE_PEM`。Guard 只接受完整的三项组合，并使用临时 `0600` PEM完成固定的 certificate login；它不会开放任意 `az login`，也不会把 PEM转发给读取命令。此模式必须配合 tenant root management group 或目标 subscriptions 上的 Reader RBAC，不能授予写角色。
+对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员仍可显式选择 **Admin → Shared service credentials → Env delivery** 兼容模式，配置完整的 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID`、`AZURE_OPS_CLIENT_CERTIFICATE_PEM`，仅授予 Reader。原生文件凭据已被选择时，Guard 不执行该 certificate login，避免替换用户选中的 Azure 身份；此模式不是原生授权失败的 fallback，也不用于 Support 写入。
 
 当 QM 注入 target 绑定元数据时，Guard 会在命令执行前强制目标契约：
 
@@ -233,7 +241,7 @@ Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目
 
 三项全部缺失表示兼容旧行为；只要部分缺失、UUID 非法、allowlist JSON 非法、或默认 subscription 不在 allowlist 内，Guard 都会返回 `TARGET_CONFIG_INVALID`。启用 target 绑定后，所有常规 Azure 读取命令必须落在 allowlist subscription 内，缺失 `--subscription` 时由 Guard 自动注入默认 subscription；重复或不匹配订阅将返回 `TARGET_DENIED`。Resource Graph POST 的 `subscriptions` 也必须是 allowlist 子集。
 
-对于用户明确提出“连接 Azure / 重连 Azure”的请求，允许一次平台批准的显式 Device Code 流程：先执行安装检查（必要时后台安装），再通过后台工具运行固定命令 `az login --tenant <requested tenant> --use-device-code --allow-no-subscriptions --only-show-errors`。该交互登录不经过 Guard，不接受任何 secret 输入；完成后必须通过 Guard 执行 `account show` 校验上下文。
+用户明确要求连接/重连时，按宿主 `interactive-login` 使用全新临时 HOME、显式 tenant 的 device-code 后台登录，并用其脚本保存；取得 handle 后显式选择，再核验元数据和实际 ARM 请求。认证命令不经过诊断 guard；VM 后续读取仍经过 guard。无需先清除共享缓存，旧 `account show` 成功也不阻止用户要求的隔离重登；Conditional Access 拒绝时不反复登录绕过策略。
 
 建议将权限拆分为两个身份：
 

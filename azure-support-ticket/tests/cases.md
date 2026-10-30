@@ -6,12 +6,18 @@
 | ---- | -------- |
 | 中文“提交 Azure Support case”或英文“create a support ticket” | 选择本 Skill，检查当前 Project 凭据和目标权限，再收集缺失字段 |
 | 普通项目 Sandbox 已有目标 Support 写权限凭据 | 在当前会话完成复核、确认、查重、创建和 case ID 核验，不要求额外环境或绑定 |
-| 没有 memory、profile 映射或环境 attachment，但当前 CLI 已登录 | 检查当前 `AZURE_CONFIG_DIR` 或项目 `$HOME/.azure`，实时核验后继续 |
+| 没有 memory、profile 映射或环境 attachment，但有原生 Azure execution handle | 核验授权并显式选择该句柄，读取账号并执行实际 ARM GET；不回退项目 `$HOME/.azure` |
 | 平台已授权本项目使用凭据入口，但 CLI 尚未登录 | 使用该入口完成认证再核验，不索取聊天 secret，不误报必须换环境 |
 | 当前 Project 未认证或未装 extension | 先用本 bundle 入口自检，必要时后台 --ensure 并等待复检通过；再按授权流程加载身份，缺身份时引导 tenant-specific 登录 |
 | 仅导入 Support bundle，未导入 azure-ops | 使用本 bundle 自带安装器、依赖锁及统一入口，不引用其他 Skill 路径 |
 | 上一会话装好非默认目录扩展，新会话未继承 export | 非交互进程通过统一入口发现相同扩展，不要求手动设置环境变量 |
-| 更换 AZURE_CONFIG_DIR 或 PATH 中有系统 az | 保留选中 profile，但仍使用受控 CLI 与固定扩展目录 |
+| 原生执行切换到临时 HOME，或 PATH 中有系统 az | `--tools-home` 定位持久受控 CLI/扩展，认证仍在私有 HOME；外部 AZURE_CONFIG_DIR 冲突时停止 |
+| interactive-login 成功但未保存到 Keychain | 不宣称可用；按原生保存流程取得 handle，再核验 Project 授权 |
+| 已保存的个人 Azure 登录被用于 Project | 先核验/申请项目 Support 用途，不把保存成功当作自动共享 |
+| 用户明确要求重登，旧 account show 仍成功 | 在全新临时 HOME 隔离登录，不注销共享缓存，不因本地元数据拒绝重登 |
+| 平台未注册旧凭据 use 接口 | 不调用该接口；使用 execute.credentials，缺少能力则报告平台不兼容 |
+| grant 有效但 handle 不在当前 execution catalog | 停止并报告平台句柄不可用，不回退旧缓存或重复申请相同授权 |
+| 新会话再次使用同一已保存句柄 | 每条命令重新选择句柄并完成实际只读请求，不依赖前次临时路径或 export |
 | 工具安装下载/校验/命令加载失败 | 停止并报告工具失败，保留原安装；不加载凭据或将问题误报为 Azure 权限不足 |
 | 工具恢复但已有创建结果不明确 | 仍只按原稳定名称恢复查询，不因修好工具自动重试创建 |
 | 凭据只属于其他 Project 或 Personal scope | 拒绝复制或使用，要求为当前 Project 正式授权 |

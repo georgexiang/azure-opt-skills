@@ -83,23 +83,24 @@ def az(tools: dict, env: dict[str, str], args: list[str], as_json: bool = True) 
 
 
 def verify_azure_identity(
-    tools: dict, env: dict[str, str], handle: str, tenant: str
+    tools: dict,
+    env: dict[str, str],
+    handle: str,
+    tenant: str,
+    object_id: str | None = None,
 ) -> dict:
     from urllib.parse import unquote
 
     service = unquote(handle.rsplit(":", 1)[0])
-    match = re.fullmatch(r"azure-aks-([0-9a-f-]{36})-([0-9a-f-]{36})", service)
-    require(
-        match is not None,
-        "LOGIN_REBIND_REQUIRED",
-        "Re-login with aks_auth.py so the native file handle is bound to an immutable Azure tenant/object ID",
-    )
-    assert match is not None
-    require(
-        uuid_value(match[1]) == tenant,
-        "IDENTITY_MISMATCH",
-        "Selected credential was captured for another Azure tenant",
-    )
+    match = re.fullmatch(r"azure-(?:aks-)?([0-9a-f-]{36})-([0-9a-f-]{36})", service)
+    if match:
+        require(
+            uuid_value(match[1]) == tenant
+            and (not object_id or uuid_value(object_id) == uuid_value(match[2])),
+            "IDENTITY_MISMATCH",
+            "Selected credential was captured for another Azure identity",
+        )
+        object_id = uuid_value(match[2])
     token = az(
         tools,
         env,
@@ -121,11 +122,11 @@ def verify_azure_identity(
     claims = verified_azure_claims(token["accessToken"], tenant)
     require(
         uuid_value(claims.get("tid", "")) == tenant
-        and uuid_value(claims.get("oid", "")) == uuid_value(match[2]),
+        and (not object_id or uuid_value(claims.get("oid", "")) == object_id),
         "IDENTITY_MISMATCH",
         "Staged Azure token identity differs from the selected credential; no cluster read was attempted",
     )
-    return {"tenantId": tenant, "objectId": match[2]}
+    return {"tenantId": tenant, "objectId": uuid_value(claims.get("oid", ""))}
 
 
 def target_from(args: argparse.Namespace) -> dict:
@@ -165,7 +166,7 @@ def target_from(args: argparse.Namespace) -> dict:
         "TARGET_DENIED",
         "Node reads require explicit cluster-read selection",
     )
-    return {
+    target = {
         "tenantId": uuid_value(args.tenant),
         "subscriptionId": subscription,
         "resourceGroup": args.resource_group,
@@ -173,6 +174,9 @@ def target_from(args: argparse.Namespace) -> dict:
         "namespaces": namespaces,
         "clusterRead": args.cluster_read,
     }
+    if args.object_id:
+        target["objectId"] = uuid_value(args.object_id)
+    return target
 
 
 def select_kubectl(tools: dict, server_version: str) -> Path:
@@ -387,6 +391,26 @@ def execute(
     tenant = uuid_value(args.tenant)
     target = None if args.action == "accounts" else target_from(args)
     authorization = authorize(api, args.handle, args.scope, args.grant, target)
+    approved_identity = authorization.get("approved", {}).get("objectId")
+    if authorization["mode"] == "project-shared":
+        from urllib.parse import unquote
+
+        service = unquote(args.handle.rsplit(":", 1)[0])
+        require(
+            re.fullmatch(r"azure-(?:aks-)?[0-9a-f-]{36}-[0-9a-f-]{36}", service)
+            or approved_identity,
+            "IDENTITY_APPROVAL_REQUIRED",
+            "A shared interactive-login handle requires the owner's approved Azure object ID in its AKS purpose",
+        )
+    requested_identity = uuid_value(args.object_id) if args.object_id else None
+    object_id = (
+        uuid_value(approved_identity) if approved_identity else requested_identity
+    )
+    require(
+        not requested_identity or requested_identity == object_id,
+        "IDENTITY_MISMATCH",
+        "Requested Azure object ID differs from the approved purpose",
+    )
     with (
         clean_profile(home),
         tempfile.TemporaryDirectory(prefix="aks-", dir=home.parent) as temp,
@@ -400,7 +424,9 @@ def execute(
                 "TARGET_DENIED",
                 "Account discovery tenant differs from the grant purpose",
             )
-            azure_identity = verify_azure_identity(tools, env, args.handle, tenant)
+            azure_identity = verify_azure_identity(
+                tools, env, args.handle, tenant, object_id
+            )
             accounts = az(
                 tools,
                 env,
@@ -427,6 +453,7 @@ def execute(
             return {
                 "ok": True,
                 "mode": "bound-readonly",
+                "azureIdentity": azure_identity,
                 "authorization": {
                     k: v for k, v in authorization.items() if k != "approved"
                 },
@@ -464,7 +491,9 @@ def execute(
             ["account", "set", "--subscription", target["subscriptionId"]],
             as_json=False,
         )
-        azure_identity = verify_azure_identity(tools, env, args.handle, tenant)
+        azure_identity = verify_azure_identity(
+            tools, env, args.handle, tenant, object_id
+        )
         check()
         base = [
             "--subscription",
@@ -640,6 +669,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--scope", required=True)
     p.add_argument("--grant")
     p.add_argument("--tenant", required=True)
+    p.add_argument("--object-id")
     p.add_argument("--subscription")
     p.add_argument("--resource-group")
     p.add_argument("--cluster")

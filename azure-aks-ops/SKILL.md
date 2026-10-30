@@ -32,11 +32,13 @@ requiredCapabilities:
 2. 按 connection reference 在会话实际使用的同一 Sandbox 检查/安装固定工具链；工具安装不带 credentials。
    记录其返回的绝对 root/python 路径和宿主的 sandbox_id，后续命令显式使用，不依赖跨调用 export 或临时 HOME 找工具。
 3. 检查当前原生凭据目录，区分聊天用户、凭据所有者和 Azure 执行身份。
-   仅用宿主真实提供的 execution handle；没有登录时通过本地 `aks_auth.py login` 发起一次显式 tenant 的 device-code 登录。
-   只转达 Microsoft verification URL、一次性 code 和进度；登录结果由脚本直接保存到平台 Keychain。
+   仅用宿主真实提供的 execution handle；已有 `interactive-login` Azure 文件句柄可直接复用，不因 service 名称要求重登。
+   缺少登录或用户明确要求重登时，按 connection reference 使用宿主 `interactive-login` 或本地 `aks_auth.py login`，
+   在全新临时 HOME 发起显式 tenant 的 device-code 登录并保存到 Keychain；只转达验证 URL、一次性 code 和进度，不清除共享缓存。
 4. 个人登录默认仅在所有者的 personal 会话执行。共享 Project/会话须取得 owner 批准的、目标限定的 AKS standing grant。
    先说明授权会允许该会话成员在批准范围内复用共享身份，取得共享意愿后申请；不要偷偷扩大一次性或个人用途。
    本版本不支持共享 once-grant；owner 只批准 once 时停止，不先加载以免消耗它。
+   通用 interactive-login handle 的共享 purpose 还须绑定 owner 已核验的 Azure objectId，运行器验签核对；不能因换账号保留旧 grants 而获得其他身份的权限。
 5. 每次实时命令都在同一个 `execute` 调用中使用 `credentials: [所选handle]`，按当前目录填写 execution scope。
    禁止使用已移除的 `/v1/keychain/use`，禁止 source 凭据脚本、读取 token 文件或复用项目 HOME 里的旧 Azure 缓存。
    当前 native execute.credentials 不存在或拒绝授权时，报告平台不兼容/授权失败，不降级为任意 shell 登录。

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -135,6 +135,45 @@ const server = createServer(async (req, res) => {
         staged.env.HOME,
         /^\/tmp\/qm-credentials\.[A-Za-z0-9]+\/home$/,
       );
+      const executed = [];
+      if (body.bundleRoot) {
+        const toolsHome = join(fixture, "tools-home");
+        const install = join(toolsHome, ".local/share/azure-cli/2.89.1");
+        const extensions = join(toolsHome, ".local/share/azure-cli/extensions/support");
+        mkdirSync(join(install, "bin"), { recursive: true });
+        mkdirSync(extensions, { recursive: true });
+        mkdirSync(join(toolsHome, ".local/bin"), { recursive: true });
+        writeFileSync(join(install, ".complete"), "2.89.1\n");
+        const cli = join(install, "bin/az");
+        writeFileSync(cli, `#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args[:1] == ["version"]:
+    print("2.89.1")
+elif args[:2] == ["extension", "show"]:
+    print("2.0.1")
+else:
+    profile = Path(os.environ["AZURE_CONFIG_DIR"])
+    login = json.loads((profile / "azureProfile.json").read_text())
+    print(json.dumps({"login": login["fixtureLogin"], "profile": str(profile)}))
+`);
+        chmodSync(cli, 0o700);
+        symlinkSync("../share/azure-cli/2.89.1/bin/az", join(toolsHome, ".local/bin/az"));
+        const home = mapped(staged.env.HOME);
+        for (const bundle of ["azure-support-ticket", "azure-ops"]) {
+          const command = bundle === "azure-ops"
+            ? ["/usr/bin/python3", [join(body.bundleRoot, bundle, "scripts/az_guard.py"), "--tools-home", toolsHome, "--", "account", "show"]]
+            : ["bash", [join(body.bundleRoot, bundle, "scripts/azure_cli.sh"), "--tools-home", toolsHome, "account", "show"]];
+          const result = JSON.parse(execFileSync(command[0], command[1], {
+            encoding: "utf8",
+            env: { HOME: home, AZURE_CONFIG_DIR: join(home, ".azure"), PATH: "/usr/bin:/bin" },
+          }));
+          assert.equal(result.login, "interactive-login");
+          assert.equal(result.profile, join(home, ".azure"));
+          executed.push(bundle);
+        }
+      }
       writeFileSync(
         join(mapped(staged.plan.directory), "kubeconfig"),
         "fixture-not-a-real-kubeconfig",
@@ -152,6 +191,7 @@ const server = createServer(async (req, res) => {
       return respond(res, 200, {
         nativeStaging: true,
         cleanup: true,
+        executed,
         savedPaths: captured.map((file) => file.path),
       });
     }

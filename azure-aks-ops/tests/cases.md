@@ -15,7 +15,10 @@
 | 原生登录 | tenant-specific device flow | 只显示 verification URL/code；成功直接保存 Keychain，临时登录 HOME 清理 |
 | 不同 Azure 账号 | 同 tenant 重新登录另一 Azure object ID | 不覆盖原账号 slot 或继承其共享 grant |
 | 个人身份 | owner personal 会话执行 status | 使用当前 native file handle，报告实际 Azure tenant/object ID，不把网页用户名当 Azure RBAC |
-| 旧缓存 | 只有 resident HOME/.azure 或 generic Azure handle | 不读取 token，不复用旧缓存；通过本入口重新登录 |
+| 旧缓存 | 只有 resident HOME/.azure，没有 native handle | 不读取 token，不复用旧缓存；隔离登录并保存到 Keychain |
+| 通用交互登录 | interactive-login 已保存 Azure 文件 handle | 直接选择句柄；个人 owner 核验签名身份，共享时需 objectId 绑定的 AKS standing purpose，不要求仅因 service 名称重登 |
+| 通用登录附加文件 | profile 带 config、clouds.config、命令日志、HTTP 二进制缓存 | Azure CLI 启动前删除非允许内容，只加载两个 JSON 登录文件；符号链接仍拒绝 |
+| 通用共享登录换账号 | 相同 handle 的缓存被替换为另一个 Azure object ID | 与 owner 批准的 purpose.objectId 不符时在集群读取前拒绝 |
 | 共享授权 | Project 内首次使用 owner 身份 | 先明确共享意愿，申请结构化 target-bound standing purpose，等待 owner 卡片批准 |
 | 拒绝/once | owner 拒绝或只批准 once | 不加载、不消耗 once，不改成 standing，不查询集群 |
 | 用途冲突 | 现有 Support grant 或冻结旧 ask | 不扩大用途、不换来源绕去重，提示 owner 处理旧申请 |

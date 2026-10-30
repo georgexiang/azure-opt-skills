@@ -462,6 +462,20 @@ def classify_cli_error(stderr: str) -> str:
     return "AZURE_ERROR"
 
 
+def configure_toolchain(home: str) -> None:
+    global USER_AZURE_INSTALL_ROOT, USER_AZURE_CLI, USER_AZURE_EXTENSION_DIR
+    directory = Path(home)
+    if not directory.is_absolute() or not directory.is_dir() or directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise GuardError("TOOLCHAIN_PATH_INVALID", "Use the owned absolute persistent toolchain HOME")
+    USER_AZURE_INSTALL_ROOT = directory / ".local" / "share" / "azure-cli" / AZURE_CLI_VERSION
+    USER_AZURE_CLI = directory / ".local" / "bin" / "az"
+    USER_AZURE_EXTENSION_DIR = directory / ".local" / "share" / "azure-cli" / "extensions"
+
+
+def native_credentials_selected() -> bool:
+    return bool(re.fullmatch(r"/tmp/qm-credentials\.[A-Za-z0-9_-]+/home", str(Path.home())))
+
+
 def azure_cli_path() -> str | None:
     expected = USER_AZURE_INSTALL_ROOT / "bin" / "az"
     marker = USER_AZURE_INSTALL_ROOT / ".complete"
@@ -529,6 +543,8 @@ def limit_process_files() -> None:
 
 
 def azure_environment() -> dict[str, str]:
+    if native_credentials_selected() and os.environ.get("AZURE_CONFIG_DIR", str(Path.home() / ".azure")) != str(Path.home() / ".azure"):
+        raise GuardError("CREDENTIAL_PROFILE_CONFLICT", "Selected credentials cannot use an external Azure profile")
     return {
         "HOME": str(Path.home()),
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -603,7 +619,7 @@ def execute(args: list[str], target: TargetContext | None = None) -> Any:
         )
     command = [az_path, *normalize_output_args(args), "--only-show-errors"]
     environment = azure_environment()
-    if target is None:
+    if target is None and not native_credentials_selected():
         authenticate_env_delivered(az_path, environment)
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         try:
@@ -643,6 +659,7 @@ def execute(args: list[str], target: TargetContext | None = None) -> Any:
 
 def parse_cli(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="az_guard.py")
+    parser.add_argument("--tools-home")
     parser.add_argument("--request-file")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
@@ -651,6 +668,8 @@ def parse_cli(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     options = parse_cli(argv if argv is not None else sys.argv[1:])
     try:
+        if options.tools_home:
+            configure_toolchain(options.tools_home)
         if options.request_file:
             if options.command:
                 raise GuardError("USAGE_INVALID", "Request-file mode does not accept direct command arguments")

@@ -33,9 +33,9 @@ requiredCapabilities:
 
 ### 1. 发现身份、展示范围并选择目标
 
-先完整阅读 [提交命令与恢复流程](references/submission.md)，按“工具初始化与统一入口”检查并修复本 Project 的工具安装，再加载凭据。所有 Azure 命令均通过本 bundle 的 `scripts/azure_cli.sh` 执行；该入口固定 CLI 与扩展目录，沿用选中的登录 profile，不依赖前一会话的环境变量或另一个 Skill 的文件。工具安装不授予 Azure 权限，不索取聊天中的密码、令牌或证书。
+先完整阅读 [提交命令与恢复流程](references/submission.md)，不带 credentials 检查/修复本 Project 的工具安装，记录实际 Skill 绝对路径、持久 `<tools-home>` 和同一个 `sandbox_id`。所有 Azure 操作通过本 bundle 的 `scripts/azure_cli.sh --tools-home <tools-home>`，每条命令显式选择原生 `execute.credentials` 文件句柄；工具路径保持持久，认证 HOME 由平台隔离。工具安装不授予 Azure 权限，不索取聊天中的密码、令牌或证书。
 
-这是多租户、多订阅 Project。先区分当前聊天请求者与实际 Azure 执行身份：用户选择项目共享凭据时，优先发现覆盖当前 Project 和 Support 用途的授权，不按聊天姓名过滤 Azure 身份。若用户最新明确允许共享身份，旧对话中的“验证某人个人身份”不再作为前置条件；仍如实标明使用的是共享身份。先检查当前进程的 Azure CLI profile，再用用户给出的 tenant、subscription ID 或名称搜索当前 Project memory 中的 Azure Support profile 映射，合并平台已授权给本项目的 resident profile 或凭据入口。没有 memory 或环境绑定也要检查当前凭据。先按 reference 读取当前凭据授权元数据：授权用途若仅覆盖诊断、数据刷新或限定另一执行上下文，先请求所有者批准本项目的 Support 用途，而不是让用户切换环境或直接复用越权。用户要求永久/持续授权时，申请 `standing` 且不设置授权到期时间；批准后核验实际 grant 的模式、用途和作用域，不能只改申请文字或继续索取一次性授权。Memory 只提供候选 `tenantId`、`subscriptionId`、profile label 与 `AZURE_CONFIG_DIR`；它不是认证或权限证据，不保存 token、cache、密钥或证书。
+这是多租户、多订阅 Project。区分聊天请求者、凭据所有者和 Azure 执行身份；按当前平台 Credentials manifest、有效 grant 和目标选择文件 execution handle，不按聊天姓名过滤。用户最新选择共享身份时，不沿用旧个人身份测试条件，仍如实展示选中身份。Memory 只提供候选 tenant/subscription、label 和 handle，每次重新核对当前目录与授权；没有 memory 也检查可用句柄，不使用 resident cache 或历史 `AZURE_CONFIG_DIR`。按 reference 核验 grant 的 audience/status/expiry/purpose：诊断或数据刷新用途不能授权 Support 提交；缺少授权才申请，已有匹配授权不为每个成员重复申请。持续用途请求 `standing` 并核验实际模式和长期用途。平台没有原生文件凭据能力时报告不兼容，不调用旧凭据加载接口或 Admin scopes 私有读取接口。
 
 按 reference 逐个核验候选 profile，汇总当前 Project 实际可访问的 tenant 和 subscription。开始分类或提交前向用户展示：
 
@@ -46,7 +46,7 @@ requiredCapabilities:
 
 用户给出 subscription ID 时只允许精确匹配；只给名称而存在多个匹配时要求选择；未给目标时让用户从已核验列表中选择。不得因当前默认订阅可用而替代用户目标，也不得把登录成功等同于拥有 Support 写权限。
 
-没有匹配 profile 时，先取得并复核目标 tenant UUID。在当前 Project 中，按 reference 使用本项目的持久 profile 执行一次显式包含 `--tenant <tenant-uuid>` 的 device-code 登录；不得退回 common/organizations 登录来猜 tenant。登录后固定目标 subscription、重新生成完整清单，并再次展示选中项。将非敏感映射写入当前 Project memory 时必须回读确认作用域和内容；如果 attachment 将 memory 写入其他 scope 或回读失败，明确报告未持久化，不宣称后续 conversation 会自动选择。
+没有匹配登录、认证失效或用户明确要求重登时，完整读取宿主 `interactive-login`，按 reference 在全新临时 HOME 执行显式 `--tenant <tenant-uuid>` 的 device-code 登录，再用其保存脚本取得 execution handle；不要注销或覆盖项目共享缓存，不因旧 `account show` 成功而拒绝隔离重登。新登录不自动共享给 Project，保存后重新核验用途授权并显式选择句柄。固定目标 subscription，核验账号元数据及实际 ARM GET，重新展示清单和选中项；不以账号元数据代替认证/写权限验证。非敏感 memory 映射必须回读确认 Project scope，不能保存临时认证路径或宣称会自动选择。
 
 使用 reference 中的 `account show` 命令读取选中订阅，返回的 tenant、subscription、cloud 和状态必须与用户目标一致；平台若提供目标允许列表，也必须满足它，配置缺失或非法时按平台契约停止，全部未配置时不凭空要求允许列表。任一已配置限制不满足就停止。只支持 `AzureCloud` 公有云、订阅内工单；其他云和 CSP 跨租户代提交移交相应批准流程。核验 Support extension、`Microsoft.Support` provider、服务目录以及身份返回的 `Microsoft.Support/supportTickets/write` 权限；无法读取祖先 deny 时标为未知，不能伪装成通过。
 

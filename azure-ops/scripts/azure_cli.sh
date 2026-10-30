@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
+tools_home="$HOME"
+if [[ "${1:-}" == --tools-home ]]; then
+	[[ $# -ge 3 && "$2" == /* ]] || { printf '%s\n' 'Expected --tools-home <absolute persistent HOME> followed by a command' >&2; exit 64; }
+	tools_home="$2"
+	shift 2
+fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/azure_cli_env.sh"
 validate_toolchain_paths
+if [[ "$HOME" =~ ^/tmp/qm-credentials\.[A-Za-z0-9_-]+/home$ ]]; then
+	[[ -z "${AZURE_CONFIG_DIR:-}" || "$AZURE_CONFIG_DIR" == "$HOME/.azure" ]] || fail 'CREDENTIAL_PROFILE_CONFLICT: selected credentials cannot use an external Azure profile'
+	export AZURE_CONFIG_DIR="$HOME/.azure"
+	[[ "${1:-}" != --ensure ]] || fail 'Install tools without credentials in the persistent HOME first'
+fi
 export AZURE_EXTENSION_DIR="$extension_dir"
 export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
 export AZURE_CORE_COLLECT_TELEMETRY=0
@@ -46,7 +57,7 @@ case "${1:-}" in
 		[[ $# == 1 ]] || fail 'Toolchain mode takes no Azure arguments'
 		if [[ "$1" == --ensure ]]; then
 			# Installer diagnostics go to stderr, never into an Azure JSON result.
-			bash "$script_dir/install_azure_cli.sh" >&2
+			HOME="$tools_home" bash "$script_dir/install_azure_cli.sh" >&2
 		fi
 		check_toolchain || not_ready
 		exit 0

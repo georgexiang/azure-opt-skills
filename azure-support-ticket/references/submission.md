@@ -1,10 +1,10 @@
 # 当前 Project 的提交与恢复
 
-仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。优先使用当前 Project 已有的 Azure CLI profile 或平台授权给本项目的凭据；缺少匹配 profile 时，在当前 Project 执行本文件定义的 tenant-specific device-code 登录。Skill 不执行角色分配，也不要求额外的执行环境绑定。
+仅在 `SKILL.md` 的凭据作用域、目标检查和确认条件全部满足后执行写入。以下命令中的占位符必须替换成核验值；除身份发现和登录命令外，所有订阅级 Azure 调用显式指定 subscription。通过平台原生 `execute.credentials` 使用当前 Project 获授权的 Azure 文件登录；缺少身份或用户明确要求重登时，执行下述隔离的 `interactive-login` 流程。Skill 不执行角色分配，也不要求额外的执行环境绑定。
 
 ## 工具初始化与统一入口
 
-在加载凭据和身份发现之前，先运行：
+先完整读取 Skill，记下实际物化的绝对目录 `<skill-dir>` 和宿主 `sandbox_id`。在不带 credentials 的执行中记下持久 HOME 为 `<tools-home>`，再运行：
 
 ```text
 bash skills/azure-support-ticket/scripts/azure_cli.sh --check
@@ -18,7 +18,7 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh --ensure
 
 本 bundle 自带固定版本安装器、依赖哈希锁和统一入口，可独立导入。只修复当前 Project 持久 `$HOME/.local` 中的工具，不加载凭据、不修改认证缓存、RBAC 或 Sandbox 镜像。已有安装可幂等复用；安装器用项目内进程锁串行化安装，下载或验收失败保留原安装。下载域名见本 Skill 的 requiredCapabilities；出网或基础依赖被拒绝时报告实际阻塞项，不绕过平台限制。
 
-后续所有 Azure 命令都使用下列完整入口，包括 `account`、`login`、`rest`、分类读取、查重、创建和恢复查询。argv 接口使用 `["bash", "skills/azure-support-ticket/scripts/azure_cli.sh", ...]`，不改为系统 `az`。入口自动选择受控 CLI、设置扩展目录并关闭动态安装，保留当前选中的 `AZURE_CONFIG_DIR`；无需 source `.bashrc` 或继承上一条命令的 export。安装器和入口的版本/路径配置来自同一 `azure_cli_env.sh`。
+后续 Azure 命令使用实际绝对入口 `["bash", "<skill-dir>/scripts/azure_cli.sh", "--tools-home", "<tools-home>", ...]`，不改为系统 `az`。下文 `skills/azure-support-ticket` 是物化目录占位符，执行时替换成 `<skill-dir>`。`execute.credentials` 会切换到私有临时 HOME，因此工具目录与认证目录必须分离：`--tools-home` 只定位持久工具，不改变执行器提供的 HOME；原生执行中的 `AZURE_CONFIG_DIR` 只能为该私有 HOME 下的 `.azure`。入口固定扩展目录并关闭动态安装；不依赖上次 execute 的 export，不在带凭据的临时 HOME 内安装工具。
 
 `--check` 使用临时空 profile 验证 CLI、Support 扩展版本及创建命令可加载，不验证 Azure 身份或写权限。`SUPPORT_TOOLCHAIN_NOT_READY` 表示工具未就绪；与凭据授权、401/403、支持计划错误分别报告。普通 Azure 调用不会隐式安装、登录、修复或重试；创建结果不明确时仍只按原稳定名称恢复查询。若运行中发现工具问题，先停止并重新完成工具预检，再核验身份；工具修好本身不构成重新创建授权。
 
@@ -38,8 +38,9 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh --ensure
 
 - 当前有效 grant 的 audience 必须覆盖本 Project，purpose 必须允许本次 Support 操作。只有诊断/数据刷新用途的 grant 不足以授权创建工单。
 - 如果旧 grant 仍限定另一执行上下文，使用平台的凭据申请流程，请求所有者批准在当前 Project 会话中读取分类、按稳定名称查重并创建用户确认的 Support 工单。说明目标订阅、用途及请求一次性还是持续授权；等待所有者审批。不要修改授权记录、伪造审批或用已有登录缓存绕过 purpose 限制。
-- QM 提供 Keychain 时，先按当前 Keychain manifest 获取元数据；缺少合适授权时调用 `POST /v1/keychain/asks`，body 为 `{credential, purpose, requestedMode}`。平台按凭据、Project 和请求来源去重，不按 purpose 去重：返回 existing/pending ask 时必须核对其冻结的 purpose 是否覆盖本次 Support 用途。相符才复用；不相符则明确报告旧申请用途冲突，请所有者先拒绝/处理旧申请后再按当前用途申请，不能修改原申请、谎称新用途已送审或更换来源绕过去重。返回实际 ask ID 和平台审批入口；未收到有效审批时不调用 use 或 Azure 创建命令。
-- 批准后重新读取 grant 的 audience/status/expiry/purpose，优先按当前 Keychain manifest 定义的 use 命令在当前项目加载凭据。`POST /v1/keychain/use`（`{grant}`）返回的是含敏感材料的 shell 初始化脚本，发出 POST 本身不等于已加载：将响应写入权限为 `0600` 的临时文件，在同一 shell 中 source 后执行所需 Azure 命令，最后清理临时脚本；不显示、读取到聊天、记录日志或启用 shell tracing。不要预先单独调用 use 来试探一次性 grant，以免消耗授权却未使用。每次 Azure 命令使用相同选中 profile，核验实际 account 上下文。遇到 use 拒绝时报告实际拒绝，不换 profile 绕过。
+- 按当前 Keychain manifest 获取元数据；`GET /v1/keychain/credentials` 只返回当前 owner 的目录，不是全 Project 的共享目录。共享凭据以当前 execution catalog 和 grant 为准。缺少合适授权时调用 `POST /v1/keychain/asks`，body 为 `{credential, purpose, requestedMode}`。平台按凭据、Project 和请求来源去重，不按 purpose 去重：返回 existing/pending ask 时必须核对其冻结的 purpose 是否覆盖本次 Support 用途。相符才复用；不相符则明确报告旧申请用途冲突，请所有者先拒绝/处理旧申请后再按当前用途申请，不能修改原申请、谎称新用途已送审或更换来源绕过去重。返回实际 ask ID 和平台审批入口；等待所有者审批，未收到有效审批时不执行 Azure 操作。
+- 批准后重新读取 grant 的 audience/status/expiry/purpose 和当前 execution catalog。credential ID 用于申请、grant ID 用于核验，执行时只使用目录给出的 execution handle。每条 Azure 命令都在同一个 `execute` 中显式填写 `credentials: [所选handle]`，并按目录提供 execution scope 和同一个 `sandbox_id`；后台任务在启动时携带 credentials，随后只观察原 process_id。平台负责暂存和清理登录文件，禁止调用 `/v1/keychain/use` 或 source 凭据脚本。句柄不可用、scope 不匹配或凭据回收失败时报告平台错误，不换身份或回退项目 HOME 的旧缓存。
+- Project 中即使是凭据所有者本人，也按实际平台共享授权要求执行；登录成功不自动授权其他项目成员。平台不支持原生文件凭据时报告不兼容，不通过 Admin scopes 私有内容接口寻找替代授权。一次性 grant 的消耗以平台实际语义为准；需要多步预检和提交而平台不能保证一次授权覆盖时，先说明并请求覆盖该工作流的 standing 授权，不擅自升级或重复消耗 once。
 - 旧聊天结论和 Memory 中的环境名称只是历史上下文，不是当前授权证明。授权已经更新时以实时元数据为准，重新加载当前 Skill 和 reference，不沿用之前的拒绝结论。报告必须区分“待凭据用途审批”“平台加载拒绝”和“Azure 权限/计划失败”，不能统称为缺少执行环境。
 
 ### 持续凭据授权与工单确认
@@ -54,23 +55,23 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh --ensure
 
 ## 多租户身份发现与选择
 
-即使没有 memory 映射，也先检查当前 Project 进程使用的 Azure CLI profile：已设置 `AZURE_CONFIG_DIR` 时沿用该目录，否则使用当前项目 HOME 下的 `$HOME/.azure`。使用下述 `account list` 核验已有登录，不读取 token/cache 文件，不因缺少名为 Support 的环境或 profile 而拒绝。
+即使没有 memory 映射，也先检查当前平台可见的 Azure 文件 execution handle。先按上节核验授权，再在带该 handle 的执行中使用下述 `account list`；不把项目持久 `$HOME/.azure`、其他进程的 `AZURE_CONFIG_DIR` 或历史缓存当作可用身份。
 
-再从当前 Project memory 搜索目标 subscription ID、tenant ID、subscription 名称及 `azure-support-profile`，合并平台授权给当前 Project 的 resident profile。只接受本项目可用且获授权的来源；来自其他 Project、Personal scope、历史聊天正文或无法确认作用域的路径不进入候选集。平台提供的凭据入口按其既有认证工具使用，保持 secret 在工具/进程环境内，不将值放进命令、聊天、memory 或请求记录。只有原始凭据但尚未认证时，不能把 `account list` 为空当作无凭据；先使用本项目已授权的认证入口，再核验清单。
+再从当前 Project memory 搜索目标 subscription ID、tenant ID、subscription 名称及 `azure-support-profile`。Memory 只提供发现提示；每次使用前重新核对当前目录、grant 和实际 Azure 身份。旧 configDir 或来自其他 Project、Personal scope 的缓存路径不进入候选集。保持 secret 在平台执行器内，不将值放进命令、聊天、memory 或请求记录。
 
 推荐的非敏感 memory 记录格式为：
 
 ```text
-azure-support-profile tenantId=<tenant-uuid> subscriptionId=<subscription-uuid> profile=<label> configDir=<approved-absolute-path>
+azure-support-profile tenantId=<tenant-uuid> subscriptionId=<subscription-uuid> profile=<label> handle=<catalog-execution-handle>
 ```
 
-Memory 是路由提示。每个候选都必须使用其 `AZURE_CONFIG_DIR` 实时执行：
+Memory 是路由提示。每个获授权候选都必须通过自己的 `execute.credentials` 实时执行：
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> account list --all --query '[].{tenant:tenantId,subscription:id,name:name,state:state,cloud:environmentName,isDefault:isDefault}' --output json
 ```
 
-执行工具通过进程环境传入选中 profile 的 `AZURE_CONFIG_DIR`，不把 profile 路径拼入用户可控的 shell 语法。不得读取、复制或输出目录内的 token/cache。对清单中每个候选 subscription，再执行 `account show --subscription <subscription-uuid>` 核验实时上下文。
+执行工具暂存该句柄的登录文件，不将临时路径保存到 memory、请求记录或下一次 execute。不得读取、复制或输出 token/cache。对每个候选 subscription，使用同一句柄执行 `account show --subscription <subscription-uuid>`，再执行目标订阅的实际 ARM GET；仅 `account show` 成功不证明令牌有效、Support 写权限或支持计划可用。
 
 向用户展示一张清单：
 
@@ -94,44 +95,30 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh account list --all --query
 
 先让操作者提供或从受信任的订阅属性中取得目标 tenant UUID。tenant 未知时停止并引导其从 Azure Portal 的 Subscription properties 获取 Directory ID；不要通过 common/organizations 登录猜测 tenant。
 
-在当前 Project 的 HOME 中为该 tenant 使用持久目录；优先复用本项目匹配的 profile，新目录推荐为：
+完整读取宿主当前的 `interactive-login` Skill，按其流程在同一 `sandbox_id` 创建全新临时 HOME，并把 HOME、XDG 目录和 `AZURE_CONFIG_DIR=<临时HOME>/.azure` 都指向该目录。不带旧 credentials 启动后台登录，命令为绝对 Support CLI 入口，加 `--tools-home <tools-home> login --tenant <tenant-uuid> --use-device-code --allow-no-subscriptions --output none`。临时 HOME 与旧账号隔离；用户明确要求重新认证时可以走此流程，不因旧 `account show` 成功而拒绝，也不先 logout 或清除共享缓存。
 
-```text
-$HOME/.azure-support/profiles/<tenant-uuid>
-```
+只转达 Microsoft 设备登录 URL、一次性代码和进度。后台成功退出后，按 `interactive-login` 的实际绝对路径运行 `save-login.mjs` 保存整个临时 HOME，记录返回的 `credentialHandle`。保存步骤不带旧 credentials，临时目录由保存脚本管理；保存失败按原生 Skill 重试保存，不宣称登录已可跨会话使用。新账号优先使用新的 Azure service slot；同一 service 的保存会替换原记录且保留旧 grants，只有确认同一身份或所有者明确批准更新共享身份后才复用旧 slot。
 
-目录权限设为 `0700`，且不得覆盖其他 tenant 的 profile。通过后台/长任务工具运行：
+保存成功不等于授权给 Project。当前用户个人登录可在其 personal 会话使用；Project 继续核验/申请本次 Support 用途的 grant，然后从当前 catalog 重新取得句柄。新保存的句柄与已有共享句柄都使用同一原生执行流程，不读取或复制缓存来迁移身份。
 
-```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh login --tenant <tenant-uuid> --use-device-code --output none
-```
-
-只向操作者显示 Microsoft 设备登录 URL、一次性代码和等待状态。授权完成后：
-
-```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh account set --subscription <subscription-uuid>
-bash skills/azure-support-ticket/scripts/azure_cli.sh account show --subscription <subscription-uuid> --query '{subscription:id,name:name,tenant:tenantId,cloud:environmentName,state:state}' --output json
-```
-
-目标 subscription 不可见、tenant 不匹配、状态不是 `Enabled` 或 Conditional Access 拒绝时停止。保留脱敏后的错误代码和 request/correlation ID；不刷新代码来绕过策略，不回退到无 `--tenant` 的登录。
-
-登录核验成功后，重新生成完整 tenant/subscription 清单并展示选中项。仅保存上述非敏感 memory 映射；保存后按 subscription ID 回读。回读结果必须来自当前 Project scope 且内容匹配，否则报告“profile 可用，但 Project memory 映射未持久化”，后续 conversation 需要显式选择该 profile。
+在带新句柄的执行中固定 `--subscription <subscription-uuid>`，重新生成清单，核对 tenant/cloud/Enabled 与实际 ARM GET，再展示选中身份。目标不可见、Conditional Access、身份不匹配或网络错误时停止，不用新的 device code 绕过策略。仅保存非敏感 memory 映射并回读确认 Project scope；不能把当前 `account show` 成功或 memory 保存成功当作整个凭据验收通过。
 
 ## 工具与上下文
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh version --output json
-bash skills/azure-support-ticket/scripts/azure_cli.sh extension show --name support --query version --output tsv
-bash skills/azure-support-ticket/scripts/azure_cli.sh account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> version --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> extension show --name support --query version --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,cloud:environmentName,state:state}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> rest --method get --url 'https://management.azure.com/subscriptions/<subscription-uuid>?api-version=2022-12-01' --query '{subscription:id,state:state}' --output json
 ```
 
-上述命令与后续每条 Azure 命令都使用同一个选中 profile 和统一入口。工具版本由 bundle 内共享配置及安装器维护；工具异常回到“工具初始化与统一入口”处理，不在写入步骤动态安装。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致。
+上述命令与后续每条 Azure 命令都显式使用同一个获授权 execution handle 和统一入口。每次执行重新由平台校验句柄，不依赖前次临时 HOME。工具版本由 bundle 内共享配置及安装器维护；工具异常回到“工具初始化与统一入口”处理，不在写入步骤动态安装。验证订阅为 `Enabled`、cloud 为 `AzureCloud`、tenant/subscription 与批准目标一致，且 ARM GET 实际成功。
 
 在读取分类前还要核验：
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh provider show --subscription <subscription-uuid> --namespace Microsoft.Support --query registrationState --output tsv
-bash skills/azure-support-ticket/scripts/azure_cli.sh support services list --subscription <subscription-uuid> --query 'length(@)' --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> provider show --subscription <subscription-uuid> --namespace Microsoft.Support --query registrationState --output tsv
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> support services list --subscription <subscription-uuid> --query 'length(@)' --output tsv
 ```
 
 身份返回的有效 actions 必须覆盖 `Microsoft.Support/supportTickets/write`。订阅和可读祖先 scope 的 deny assignment 不得覆盖该 action；祖先 deny 无读取权限时展示为未知，并说明创建调用可能是第一项权威验证。登录成功或服务列表可读本身不证明拥有写权限或有效支持计划。
@@ -139,8 +126,8 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh support services list --su
 ## 服务与问题分类
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh support services list --subscription <subscription-uuid> --output json
-bash skills/azure-support-ticket/scripts/azure_cli.sh support services problem-classifications list --subscription <subscription-uuid> --service-name <service-name-from-list> --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> support services list --subscription <subscription-uuid> --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> support services problem-classifications list --subscription <subscription-uuid> --service-name <service-name-from-list> --output json
 ```
 
 从服务结果中选取 `name` 和完整 `id`，按显示名筛选但不猜测 ID。分类结果中保存完整 `id`；其 `/providers/Microsoft.Support/services/<service-name>/problemClassifications/<classification-name>` 路径必须属于所选服务。创建 CLI 的 `--problem-classification` 使用完整分类 ID，不额外拼接未经验证的 service ID。
@@ -154,7 +141,7 @@ bash skills/azure-support-ticket/scripts/azure_cli.sh support services problem-c
 ## 提交前读取
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh support in-subscription tickets show --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --query '{id:id,name:name,caseId:supportTicketId,title:title,description:description,classification:problemClassificationId,status:status,severity:severity,created:createdDate}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> support in-subscription tickets show --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --query '{id:id,name:name,caseId:supportTicketId,title:title,description:description,classification:problemClassificationId,status:status,severity:severity,created:createdDate}' --output json
 ```
 
 Support extension 的该命令会将 REST `properties` 展平，上述查询使用 CLI 顶层字段。当前项目升级 extension 时核对输出契约；任何必需字段缺失都不能当作成功。
@@ -168,7 +155,7 @@ Support extension 的该命令会将 REST `properties` 展平，上述查询使�
 ## 技术、计费和订阅管理创建
 
 ```text
-bash skills/azure-support-ticket/scripts/azure_cli.sh support in-subscription tickets create --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --title <confirmed-title> --description <confirmed-description> --problem-classification <verified-full-classification-id> --severity <confirmed-severity> --contact-first-name <first-name> --contact-last-name <last-name> --contact-email <email> --contact-country <country> --contact-language <language> --contact-timezone <api-timezone> --contact-method <email-or-phone> --advanced-diagnostic-consent <Yes-or-No> --require-24-by-7-response <true-or-false> --query '{id:id,name:name,caseId:supportTicketId,status:status,severity:severity,created:createdDate}' --output json
+bash skills/azure-support-ticket/scripts/azure_cli.sh --tools-home <tools-home> support in-subscription tickets create --subscription <subscription-uuid> --ticket-name <stable-ticket-name> --title <confirmed-title> --description <confirmed-description> --problem-classification <verified-full-classification-id> --severity <confirmed-severity> --contact-first-name <first-name> --contact-last-name <last-name> --contact-email <email> --contact-country <country> --contact-language <language> --contact-timezone <api-timezone> --contact-method <email-or-phone> --advanced-diagnostic-consent <Yes-or-No> --require-24-by-7-response <true-or-false> --query '{id:id,name:name,caseId:supportTicketId,status:status,severity:severity,created:createdDate}' --output json
 ```
 
 按确认内容添加可选参数，每项都是独立的 argv：

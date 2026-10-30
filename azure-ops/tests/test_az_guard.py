@@ -38,6 +38,26 @@ def support_args() -> list[str]:
 
 
 class GuardValidationTests(unittest.TestCase):
+    def test_native_execution_does_not_replace_login_with_env_delivered_identity(self):
+        with tempfile.TemporaryDirectory(prefix="qm-credentials.", dir="/tmp") as directory:
+            home = Path(directory) / "home"
+            home.mkdir(mode=0o700)
+            with (
+                patch.dict(os.environ, {"HOME": str(home)}),
+                patch.object(az_guard, "azure_cli_path", return_value="/trusted/az"),
+                patch.object(az_guard, "authenticate_env_delivered") as login,
+                patch.object(az_guard.subprocess, "run") as process,
+            ):
+                process.return_value.returncode = 0
+                self.assertIsNone(az_guard.execute(["account", "show"]))
+                login.assert_not_called()
+                self.assertEqual(process.call_args.kwargs["env"]["AZURE_CONFIG_DIR"], str(home / ".azure"))
+
+    def test_tools_home_option_keeps_auth_home_unchanged(self):
+        options = az_guard.parse_cli(["--tools-home", "/persistent", "--", "account", "show"])
+        self.assertEqual(options.tools_home, "/persistent")
+        self.assertEqual(options.command, ["--", "account", "show"])
+
     def assert_guard_error(self, code: str, callback) -> None:
         with self.assertRaises(az_guard.GuardError) as raised:
             callback()

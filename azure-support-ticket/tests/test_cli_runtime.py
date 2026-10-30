@@ -89,6 +89,86 @@ class CliRuntimeTests(unittest.TestCase):
             self.assertEqual(out["dynamic"], "no")
             self.assertFalse(Path(path).exists())
 
+    def test_native_login_uses_persistent_tools_and_private_credential_home(self):
+        with tempfile.TemporaryDirectory(prefix="qm-credentials.", dir="/tmp") as stage:
+            home = Path(stage) / "home"
+            home.mkdir(mode=0o700)
+            (home / ".azure").mkdir(mode=0o700)
+            for bundle in ("azure-support-ticket", "azure-ops"):
+                with self.subTest(bundle=bundle):
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            str(ROOT / bundle / "scripts/azure_cli.sh"),
+                            "--tools-home",
+                            str(self.home),
+                            "account",
+                            "show",
+                        ],
+                        env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                        text=True,
+                        capture_output=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    actual = json.loads(result.stdout)
+                    self.assertEqual(actual["args"], ["account", "show"])
+                    self.assertEqual(actual["profile"], str(home / ".azure"))
+                    self.assertEqual(actual["extensions"], str(self.extension.parent))
+                    self.assertFalse((home / ".local").exists())
+
+    def test_native_login_rejects_an_ambient_external_profile(self):
+        with tempfile.TemporaryDirectory(prefix="qm-credentials.", dir="/tmp") as stage:
+            home = Path(stage) / "home"
+            home.mkdir(mode=0o700)
+            result = self.invoke(
+                "--tools-home",
+                str(self.home),
+                "account",
+                "show",
+                HOME=str(home),
+                AZURE_CONFIG_DIR=str(self.home / ".azure"),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("CREDENTIAL_PROFILE_CONFLICT", result.stderr)
+
+    def test_guard_uses_same_staged_login_without_installing_in_credential_home(self):
+        link = self.home / ".local/bin/az"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("../share/azure-cli/2.89.1/bin/az")
+        for _ in range(2):
+            with tempfile.TemporaryDirectory(
+                prefix="qm-credentials.", dir="/tmp"
+            ) as stage:
+                home = Path(stage) / "home"
+                home.mkdir(mode=0o700)
+                (home / ".azure").mkdir(mode=0o700)
+                result = subprocess.run(
+                    [
+                        "/usr/bin/python3",
+                        str(ROOT / "azure-ops/scripts/az_guard.py"),
+                        "--tools-home",
+                        str(self.home),
+                        "--",
+                        "account",
+                        "show",
+                    ],
+                    env={
+                        "HOME": str(home),
+                        "PATH": "/usr/bin:/bin",
+                        "AZURE_OPS_TENANT_ID": "invalid-ambient-identity",
+                    },
+                    text=True,
+                    capture_output=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertEqual(
+                    json.loads(result.stdout)["profile"], str(home / ".azure")
+                )
+                self.assertFalse((home / ".local").exists())
+
     def test_ignores_path_shadow_and_extension_override(self):
         shadow = self.home / "shadow"
         shadow.mkdir()

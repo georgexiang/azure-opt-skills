@@ -1,17 +1,19 @@
-name: Validate AKS bundle
+name: Validate Azure bundles
 
 on:
   pull_request:
     paths:
       - "azure-aks-ops/**"
-      - "azure-ops/SKILL.md"
+      - "azure-ops/**"
+      - "azure-support-ticket/**"
       - ".github/aks-upstream/**"
       - ".github/workflows/*aks*.yml"
   push:
     branches: [main]
     paths:
       - "azure-aks-ops/**"
-      - "azure-ops/SKILL.md"
+      - "azure-ops/**"
+      - "azure-support-ticket/**"
       - ".github/aks-upstream/**"
       - ".github/workflows/*aks*.yml"
   workflow_dispatch:
@@ -47,6 +49,7 @@ jobs:
           "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s .github/aks-upstream/tests -v
           "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s .github/aks-upstream/runtime-tests -v
           "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s azure-ops/tests -v
+          "$RUNNER_TEMP/aks-dev/bin/python" -m unittest discover -s azure-support-ticket/tests -v
           node --check .github/aks-upstream/check_qm_ingest.mjs
           node --check .github/aks-upstream/native_contract_fixture.mjs
           git diff --check

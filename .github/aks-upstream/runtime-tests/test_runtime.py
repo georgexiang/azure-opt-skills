@@ -335,10 +335,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("No node or namespace read", result["kubernetes"]["unavailable"])
         self.assertFalse(any("get-credentials" in cmd for cmd in self.commands))
 
-    def test_cloud_overrides_and_binary_caches_are_rejected_before_cli(self):
-        path = self.home / ".azure/clouds.config"
-        path.write_text("untrusted override")
-        with self.assertRaisesRegex(AKSError, "unsupported cloud/config"):
+    def test_symlinked_login_files_are_rejected_before_cli(self):
+        path = self.home / ".azure/azureProfile.json"
+        path.symlink_to(self.directory / "another-identity")
+        with self.assertRaisesRegex(AKSError, "unsafe login files"):
             self.execute(self.args("cluster"))
         self.assertEqual(self.commands, [])
 
@@ -413,6 +413,82 @@ class RuntimeTests(unittest.TestCase):
         self.api.grants[0]["purpose"] = "Support ticket submission"
         with self.assertRaisesRegex(AKSError, "purpose"):
             self.execute(args)
+
+    def test_interactive_login_owner_handle_uses_only_json_profile(self):
+        self.api.own[0]["service"] = "azure"
+        args = self.args("cluster")
+        args.handle = "azure:credential-one"
+        config = self.home / ".azure"
+        (config / "config").write_text("[cloud]\nname=untrusted\n")
+        (config / "clouds.config").write_text("untrusted override")
+        (config / "msal_http_cache.bin").write_bytes(b"not-a-safe-pickle")
+        (config / "commands").mkdir()
+        (config / "commands/login.log").write_text(SECRET)
+        with patch.object(runtime, "run", side_effect=self.command) as command:
+
+            def sanitized(argv, env, **kwargs):
+                self.assertFalse((config / "config").exists())
+                self.assertFalse((config / "clouds.config").exists())
+                self.assertFalse((config / "msal_http_cache.bin").exists())
+                self.assertFalse((config / "commands").exists())
+                return self.command(argv, env, **kwargs)
+
+            command.side_effect = sanitized
+            result = runtime.execute(args, self.api, self.tools)
+        self.assertEqual(result["azureIdentity"]["objectId"], OBJECT)
+        self.assertNotIn(SECRET, json.dumps(result))
+
+    def test_interactive_login_shared_handle_requires_approved_immutable_identity(self):
+        args = self.shared()
+        args.handle = "azure:credential-one"
+        with self.assertRaisesRegex(AKSError, "object ID"):
+            self.execute(args)
+        self.assertEqual(self.commands, [])
+        purpose = json.loads(self.api.grants[0]["purpose"])
+        purpose["objectId"] = OBJECT
+        self.api.grants[0]["purpose"] = json.dumps(purpose)
+        self.assertEqual(self.execute(args)["azureIdentity"]["objectId"], OBJECT)
+        self.commands.clear()
+        self.token_oid = SUB
+        with self.assertRaisesRegex(AKSError, "token identity differs"):
+            self.execute(args)
+        self.assertFalse(any("aks" in command for command in self.commands))
+
+    def test_generic_login_request_binds_object_id_without_changing_legacy_purpose(
+        self,
+    ):
+        args = auth.parser().parse_args(
+            [
+                "request-access",
+                "--credential-id",
+                "credential-one",
+                "--tenant",
+                TENANT,
+                "--subscription",
+                SUB,
+                "--resource-group",
+                "rg-test",
+                "--cluster",
+                "aks-test",
+                "--object-id",
+                OBJECT,
+            ]
+        )
+        self.assertEqual(
+            auth.request_access(args, self.api)["purpose"]["objectId"], OBJECT
+        )
+
+    def test_account_discovery_does_not_replace_an_explicitly_requested_identity(self):
+        args = self.shared()
+        args.action = "accounts"
+        args.handle = "azure:credential-one"
+        args.object_id = SUB
+        purpose = json.loads(self.api.grants[0]["purpose"])
+        purpose["objectId"] = OBJECT
+        self.api.grants[0]["purpose"] = json.dumps(purpose)
+        with self.assertRaisesRegex(AKSError, "object ID differs"):
+            self.execute(args)
+        self.assertEqual(self.commands, [])
 
     def test_revoked_expired_and_once_grants_stop_without_fallback(self):
         for field, value in [("status", "revoked"), ("expiresAt", 1), ("mode", "once")]:

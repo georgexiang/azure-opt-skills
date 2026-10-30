@@ -61,7 +61,9 @@ class SupportBundleTests(unittest.TestCase):
             "pending ask",
             "等待所有者审批",
             "不要修改授权记录",
-            "POST /v1/keychain/use",
+            "execute.credentials",
+            "execution handle",
+            "interactive-login",
             "历史上下文",
             "待凭据用途审批",
         ):

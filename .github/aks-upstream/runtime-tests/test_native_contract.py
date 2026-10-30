@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import subprocess
@@ -73,21 +72,36 @@ class NativeContractTests(unittest.TestCase):
             {"AGENT_API_URL": ready["url"], "AGENT_API_TOKEN": ready["ownerToken"]},
         ):
             owner = Keychain()
-            saved = owner.call(
-                "/v1/keychain/credentials",
-                {
-                    "service": f"azure-aks-{TENANT}-{OBJECT}",
-                    "files": [
-                        {
-                            "path": ".azure/" + name,
-                            "contentBase64": base64.b64encode(b"{}").decode(),
-                            "mode": 0o600,
-                        }
-                        for name in ("azureProfile.json", "msal_token_cache.json")
-                    ],
-                },
+            login_home = fixture / "interactive-login-home"
+            (login_home / ".azure").mkdir(parents=True, mode=0o700)
+            for name in ("azureProfile.json", "msal_token_cache.json"):
+                path = login_home / ".azure" / name
+                path.write_text('{"fixtureLogin":"interactive-login"}')
+                path.chmod(0o600)
+            saved = subprocess.run(
+                [
+                    "node",
+                    str(
+                        Path(os.environ["QM_SOURCE_FOR_AKS_TESTS"])
+                        / "skills-seed/interactive-login/scripts/save-login.mjs"
+                    ),
+                    "azure",
+                    str(login_home),
+                ],
+                env=os.environ.copy(),
+                text=True,
+                capture_output=True,
+                timeout=30,
             )
-            credential = saved["credential"]
+            self.assertEqual(
+                saved.returncode, 0, "Native interactive-login save failed"
+            )
+            self.assertFalse(login_home.exists())
+            credential = next(
+                c
+                for c in owner.call("/v1/keychain/credentials")["credentials"]
+                if c["service"] == "azure"
+            )
             handle = credential["credentialHandle"]
             self.assertEqual(
                 owner.identity(), {"scopeId": "personal:alice", "actorId": "alice"}
@@ -117,6 +131,8 @@ class NativeContractTests(unittest.TestCase):
                     credential["id"],
                     "--tenant",
                     TENANT,
+                    "--object-id",
+                    OBJECT,
                     "--subscription",
                     SUB,
                     "--resource-group",
@@ -158,7 +174,9 @@ class NativeContractTests(unittest.TestCase):
                 authorize(group, handle, "personal:alice", None, None)
             stage = urllib.request.Request(
                 ready["url"] + "/__fixture/stage",
-                data=json.dumps({"grant": grant["id"]}).encode(),
+                data=json.dumps(
+                    {"grant": grant["id"], "bundleRoot": str(ROOT)}
+                ).encode(),
                 headers={
                     "x-agent-capability": ready["groupToken"],
                     "Content-Type": "application/json",
@@ -167,6 +185,7 @@ class NativeContractTests(unittest.TestCase):
             with urllib.request.urlopen(stage, timeout=15) as response:
                 staged = json.load(response)
             self.assertTrue(staged["nativeStaging"] and staged["cleanup"])
+            self.assertEqual(staged["executed"], ["azure-support-ticket", "azure-ops"])
             self.assertEqual(
                 sorted(staged["savedPaths"]),
                 [".azure/azureProfile.json", ".azure/msal_token_cache.json"],

@@ -5,11 +5,12 @@ azure_cli_version="2.89.1"
 support_extension_version="2.0.1"
 support_extension_url="https://azcliprod.blob.core.windows.net/cli-extensions/support-2.0.1-py2.py3-none-any.whl"
 support_extension_sha256="3f070154f839464aa24b54990d87d2dba99d6da60ec3ef314a74ba22c268fec4"
-install_base="$HOME/.local/share/azure-cli"
+tools_home="${tools_home:-$HOME}"
+install_base="$tools_home/.local/share/azure-cli"
 install_root="$install_base/$azure_cli_version"
-bin_dir="$HOME/.local/bin"
+bin_dir="$tools_home/.local/bin"
 extension_dir="$install_base/extensions"
-state_dir="$HOME/.local/state"
+state_dir="$tools_home/.local/state"
 marker="$install_root/.complete"
 
 fail() {
@@ -33,8 +34,10 @@ assert_safe_existing_path() {
 validate_toolchain_paths() {
 	[[ "$HOME" == /* ]] || fail "HOME must be an absolute path"
 	assert_owned_real_dir "$HOME"
+	[[ "$tools_home" == /* ]] || fail "Toolchain HOME must be an absolute path"
+	assert_owned_real_dir "$tools_home"
 	local path
-	for path in "$HOME/.local" "$HOME/.local/share" "$install_base" "$install_root" \
+	for path in "$tools_home/.local" "$tools_home/.local/share" "$install_base" "$install_root" \
 		"$install_root/bin" "$bin_dir" "$extension_dir" "$state_dir"; do
 		assert_safe_existing_path "$path"
 	done

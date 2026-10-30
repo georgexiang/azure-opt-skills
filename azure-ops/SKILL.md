@@ -43,17 +43,21 @@ AKS 请求先检查当前宿主是否已导入 `azure-aks-ops`，存在则移交
 每次执行 Azure 实时操作时：
 
 1. 完整阅读对应分支的 reference。
-2. 收集输入前，运行 `bash skills/azure-ops/scripts/install_azure_cli.sh --check` 验证固定版本的 Scope 本地 Azure CLI。如果检查失败，使用 `background` 工具运行 `bash skills/azure-ops/scripts/install_azure_cli.sh`。持续观察直到安装成功退出，再运行一次 `--check`，然后继续处理同一个请求。安装器只写入当前 Scope 中固定且持久的 `$HOME/.local` 路径；绝不使用 `sudo`、`apt`、环境路径覆盖，也不修改 Sandbox 镜像。
+2. 记录实际 Skill 绝对目录 `<skill-dir>` 和同一个 `sandbox_id`；在不带 credentials 的执行中记下持久 HOME 为 `<tools-home>`，运行 `bash skills/azure-ops/scripts/install_azure_cli.sh --check`。失败则后台运行安装器并等待，复检通过再继续。安装器只写当前 Scope 的持久工具目录，不修改认证缓存或 Sandbox 镜像。
 3. 从当前对话中解析缺失值。只有当所选分支缺少订阅、资源组、VM 名称或时间范围就无法安全继续时，才向用户询问。
 4. 绝不猜测资源组、资源 ID、NIC 名称、磁盘名称、SKU 上限、订阅或 Support Problem Classification ID。
-5. 所有 Azure CLI 命令都必须通过随附的 guard 运行，绝不直接调用 `az`。例如：`python3 skills/azure-ops/scripts/az_guard.py -- account show --query '{subscription:id,tenant:tenantId,user:user.name}' -o json`。
+5. 先完成下述原生凭据选择，每条实时命令都在同一个 `execute` 中显式携带 `credentials: [所选handle]` 和目录指定的 execution scope、同一个 sandbox_id。所有诊断命令必须通过 guard，例如：`python3 <skill-dir>/scripts/az_guard.py --tools-home <tools-home> -- account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,user:user.name}' -o json`。分支 reference 中省略的 `--tools-home` 执行时均须补齐；绝对工具路径与临时凭据 HOME 分离，不在临时 HOME 重新安装。
 6. 每个参数都作为单独的 shell 引号参数传递。绝不把用户文本插入 shell 语法、命令替换、重定向、管道、环境变量赋值或选项名称。
 7. 执行 `vm full` 时复用共享的 VM Inventory 和 SKU 结果；不要为每项指标重复查询。
 8. 将 `null`、空序列、权限错误和不可用指标视为缺失数据。缺失数据应标为 `N/A` 或无法判定，绝不能判为健康。
 9. 使用用户指定的时区展示资源时间。如果用户未指定且对话为中文，则使用 Asia/Shanghai 并明确标注。向 Azure API 发送 UTC 时间戳。
 10. 最终报告中不要输出命令、原始 JSON、访问令牌、凭据字段或完整身份验证错误。
 
-Guard 要求 Azure CLI 已在当前 QM Scope 中完成身份验证。如果返回 `AZ_NOT_FOUND`，运行一次随附安装器并重试。如果返回 `AUTH_REQUIRED`，停止实时查询，并说明运营方必须为该 Scope 配置只读 Azure 身份。不要要求用户把 Secret 粘贴到聊天中。
+### 原生凭据选择
+
+先读取宿主当前 Credentials manifest。以当前可用的 Azure 文件 execution handle 为执行入口，credential ID 用于申请、grant ID 用于核验，不混用。个人登录和 Project 共享登录采用相同的 `execute.credentials` 注入；共享时核验 audience、status、expiry、诊断用途和目标，缺少授权才请求所有者批准。`GET /v1/keychain/credentials` 不是全 Project 的共享目录，不因当前用户没有个人凭据就忽略有效共享句柄。Support 用途或 AKS 专用用途不能自动扩大为本 Skill 的诊断用途。
+
+平台在每条命令启动时校验并暂存登录文件，执行结束回收；后台任务只在启动时带 credentials，随后观察同一 process_id。不要调用 `/v1/keychain/use`、source 凭据脚本、复用旧 `$HOME/.azure` 或跨执行保存临时认证路径。句柄不可用、授权拒绝或回收失败时报告平台层错误，不切换共享身份或回退其他缓存。先核对账号 tenant/subscription/cloud，再通过 guard 执行目标订阅的 ARM GET；仅 `account show` 不证明令牌有效。Guard 返回 `AZ_NOT_FOUND` 时在不带 credentials 的持久 HOME 修复工具；`AUTH_REQUIRED` 时按下述登录流程重新认证，不索取聊天 Secret。
 
 当 QM 注入以下绑定元数据时，Guard 会将其视为强约束并在每次执行前校验：
 
@@ -75,16 +79,16 @@ Guard 要求 Azure CLI 已在当前 QM Scope 中完成身份验证。如果返�
 - `AZURE_OPS_CLIENT_ID`：应用 client UUID；
 - `AZURE_OPS_CLIENT_CERTIFICATE_PEM`：同时包含私钥与证书的 PEM。
 
-三项必须同时存在。Guard 会验证 UUID 与 PEM 结构，将 PEM 写入临时 `0600` 文件，执行固定的 service-principal certificate login，再执行原只读白名单命令；PEM 不会进入查询子进程环境、输出或持久文件。Agent 仍禁止直接执行 `az login`。Env delivery 是 org-wide 的，只有明确接受所有 Scope 共享该身份的可信环境才可使用，并且 Azure RBAC 必须限制为 Reader。
+三项必须同时存在。这是管理员显式选择的兼容模式，不是 native handle 失败时的 fallback。已通过 `execute.credentials` 暂存文件登录时，Guard 优先保留该身份，不执行 Env delivery certificate login。非 native 模式仍验证 UUID/PEM 并经固定 certificate login 执行只读白名单；PEM 不进入查询子进程环境、输出或持久文件。Env delivery 是 org-wide 的，仅限接受所有 Scope 共享只读 Reader 身份的可信部署；Support 不使用或升级该身份。
 
 当用户明确要求连接或重连 Azure（例如“connect Azure”“reconnect Azure”）时，允许执行一次受控交互登录流程：
 
-1. 先运行 `bash skills/azure-ops/scripts/install_azure_cli.sh --check`，失败则使用 `background` 工具运行安装器并等待完成；
-2. 不经过 Guard，直接通过 `background` 工具运行固定命令：`az login --tenant <requested-tenant-uuid> --use-device-code --allow-no-subscriptions --only-show-errors`；
-3. 不接受也不索取任何 secret、密码、证书私钥或 token；
-4. 登录完成后，必须通过 Guard 执行 `account show` 验证当前上下文。
+1. 在持久 HOME、不带 credentials 完成工具检查，记录 `<tools-home>` 和实际入口绝对路径。
+2. 完整读取宿主 `interactive-login`。在同一 sandbox_id 的全新临时 HOME 中设置 HOME/XDG 与 `AZURE_CONFIG_DIR=<临时HOME>/.azure`；不带旧 credentials 启动后台 `bash <skill-dir>/scripts/azure_cli.sh --tools-home <tools-home> login --tenant <requested-tenant-uuid> --use-device-code --allow-no-subscriptions --only-show-errors`。此认证命令不经过诊断 guard。
+3. 只转达 Microsoft 设备 URL、一次性 code 和进度。后台成功后用 `interactive-login` 自带的绝对 `save-login.mjs` 保存临时 HOME，取得 `credentialHandle`；失败按其原生保存/重试流程处理。新身份用新 service slot；只有确认同一身份或所有者明确批准更换共享身份才替换旧 slot，以免继承另一账号的 grants。
+4. 保存不自动共享给 Project。重新核验当前目录和诊断用途授权，再在带新句柄的执行中通过 Guard 核对账号并完成目标订阅 ARM GET。新会话仍显式选择该句柄，不保存临时路径。
 
-该流程用于平台批准的交互式设备码登录，并支持 WebUI 预填充登录链路。
+用户明确要求重登时可使用此隔离流程，不以旧 `account show` 成功为由拒绝；不先 logout 或清除共享缓存。Conditional Access 拒绝时停止，不用重复设备码绕过策略。宿主缺少原生 interactive-login/凭据机制时报告不兼容，保留知识型回答。
 
 ## 安全边界
 

@@ -43,7 +43,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_versions_and_paths_are_fixed(self) -> None:
         self.assertIn('azure_cli_version="2.89.1"', ENVIRONMENT)
         self.assertIn('support_extension_version="2.0.1"', ENVIRONMENT)
-        self.assertIn('install_base="$HOME/.local/share/azure-cli"', ENVIRONMENT)
+        self.assertIn('install_base="$tools_home/.local/share/azure-cli"', ENVIRONMENT)
         self.assertNotRegex(
             INSTALLER, r"AZURE_CLI_(?:VERSION|INSTALL_ROOT|BIN_DIR|STATE_DIR):-"
         )
