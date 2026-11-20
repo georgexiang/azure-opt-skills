@@ -452,7 +452,7 @@ class WatchTests(unittest.TestCase):
             f"{vm_id(SUB, f'vm-{i:03}')}|Data Disk Latency|0": {"base": 2.0, "recent": 100.0 + i, "recentMinutes": 12, "hourly": 2.0}
             for i in range(60)
         }
-        code, body, summary, result = self.watch()
+        code, body, summary, result = self.watch("--disk-burst", "1000")
         self.assertEqual(code, 1)
         self.assertLessEqual(len(result.stdout.strip().splitlines()[0]), 7000)
         assert body is not None
@@ -503,6 +503,32 @@ class WatchTests(unittest.TestCase):
         code, _, _, result = self.watch("--tenant", "contoso.onmicrosoft.com")
         self.assertEqual(code, 2)
         self.assertIn("tenant must be a tenant UUID", result.stderr)
+
+    def slow_disks(self, count: int) -> None:
+        self.world["vms"] = [vm(vm_id(SUB, f"vm-{i:03}")) for i in range(count)]
+        self.world["metrics"] = {
+            f"{vm_id(SUB, f'vm-{i:03}')}|Data Disk Latency|0": {"base": 2.0, "recent": 100.0 + i, "recentMinutes": 12, "hourly": 2.0}
+            for i in range(count)
+        }
+
+    def test_many_disk_onsets_collapse_into_one_burst(self) -> None:
+        self.slow_disks(25)
+        self.world["health"] = [health(vm_id(SUB, "vm-000"), "Unavailable", self.now - timedelta(minutes=3))]
+        code, body, summary, _ = self.watch()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("disk-burst", None), ("health-onset", "vm-000")])
+        assert body is not None
+        burst = next(f for f in body["findings"] if f["rule"] == "disk-burst")["observed"]
+        self.assertEqual(burst["count"], 25)
+        self.assertEqual(burst["groups"], [{"subscription": SUB, "location": "westeurope", "rule": "disk-latency", "count": 25}])
+        self.assertEqual([w["name"] for w in burst["worst"]], ["vm-024", "vm-023", "vm-022", "vm-021", "vm-020"])
+        self.assertIn("2 finding(s)", summary)
+
+    def test_few_disk_onsets_stay_individual(self) -> None:
+        self.slow_disks(3)
+        code, body, _, _ = self.watch("--disk-burst", "3")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("disk-latency", f"vm-00{i}") for i in range(3)])
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

@@ -120,6 +120,7 @@ class Config:
     baseline_days: int
     workers: int
     deadline_seconds: float
+    disk_burst: int
 
 
 @dataclass
@@ -678,11 +679,51 @@ def short_finding(finding: dict[str, Any]) -> dict[str, Any]:
     return dict(compact(out))
 
 
+DISK_RULES = ("disk-latency", "disk-saturation")
+
+
+def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
+    disks = [f for f in report.findings if f["rule"] in DISK_RULES]
+    if len(disks) <= cfg.disk_burst:
+        return
+    report.findings = [f for f in report.findings if f["rule"] not in DISK_RULES]
+    groups: dict[tuple[str, str, str], int] = defaultdict(int)
+    for f in disks:
+        r = f["resource"]
+        groups[(str(r.get("subscriptionId")), str(r.get("location")), f["rule"])] += 1
+    worst = sorted(disks, key=lambda f: -float(f["observed"].get("median") or 0))[:5]
+    report.findings.append({
+        "rule": "disk-burst",
+        "severity": "warning",
+        "resource": None,
+        "episode": f"disk-burst|{iso(now)}",
+        "observed": {
+            "count": len(disks),
+            "groups": [
+                {"subscription": sub, "location": loc, "rule": rule, "count": n}
+                for (sub, loc, rule), n in sorted(groups.items(), key=lambda kv: -kv[1])[:10]
+            ],
+            "worst": [
+                {
+                    "name": f["resource"].get("name"),
+                    "computerName": f["resource"].get("computerName"),
+                    "rule": f["rule"],
+                    "series": f["observed"].get("series"),
+                    "metric": f["observed"].get("metric"),
+                    "median": f["observed"].get("median"),
+                    "baselineMedian": f["observed"].get("baselineMedian"),
+                }
+                for f in worst
+            ],
+        },
+    })
+
+
 def finding_rank(finding: dict[str, Any]) -> tuple[int, int, float]:
     observed = finding.get("observed") or {}
     return (
         0 if finding["severity"] == "critical" else 1,
-        0 if finding["rule"] in ("health-onset", "platform-event", "daily-summary") else 1,
+        0 if finding["rule"] in ("health-onset", "platform-event", "daily-summary", "disk-burst") else 1,
         -float(observed.get("median") or 0),
     )
 
@@ -745,6 +786,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     check_health(cfg, now, vms, health, report)
     check_annotations(cfg, now, vms, annotations, report)
     check_disks(azure, cfg, now, tenants, vms, report)
+    merge_disk_burst(cfg, now, report)
     due = now.hour == cfg.summary_hour and now.minute < cfg.interval.total_seconds() // 60
     if due and (report.unhealthy or report.blind or report.saturated):
         report.findings.append({
@@ -829,6 +871,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baseline-days", type=int, default=7)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--deadline-seconds", type=float, default=100.0)
+    parser.add_argument("--disk-burst", type=int, default=20)
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -852,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_days=args.baseline_days,
         workers=args.workers,
         deadline_seconds=args.deadline_seconds,
+        disk_burst=args.disk_burst,
     )
     code, text = run(cfg)
     print(text)
