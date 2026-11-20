@@ -128,6 +128,7 @@ class Report:
     running: int = 0
     unhealthy: list[dict[str, Any]] = field(default_factory=list)
     series: int = 0
+    saturated: int = 0
     calls: int = 0
 
 
@@ -524,14 +525,27 @@ def check_disks(
         ))
     for (tenant, _, _, members, split, checks), found in zip(jobs, results):
         for vm in members:
+            disks: dict[str, dict[str, dict[datetime, float]]] = defaultdict(dict)
             for metric in found.get(vm["id"], []):
                 name = str((metric.get("name") or {}).get("value", ""))
-                check = checks.get(name)
-                if check is None:
+                if name not in checks:
                     continue
-                limit = float(getattr(cfg, check.threshold))
                 for label, points in series_of(metric, split):
                     report.series += 1
+                    disks[label][name] = points
+            for label, metrics in disks.items():
+                latency = [
+                    v for n, pts in metrics.items() if checks[n] is LATENCY
+                    for v in window_values(pts, end, cfg.window)
+                ]
+                slow = bool(latency) and statistics.median(latency) > cfg.latency_ms
+                for name, points in metrics.items():
+                    check = checks[name]
+                    limit = float(getattr(cfg, check.threshold))
+                    if check is SATURATION and not slow:
+                        if sustained(window_values(points, end, cfg.window), limit, cfg.sustain):
+                            report.saturated += 1
+                        continue
                     evaluate_series(
                         azure, cfg, tenant, now, end, vm, name, split, label, points, check,
                         limit, report,
@@ -631,7 +645,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     check_annotations(cfg, now, vms, annotations, report)
     check_disks(azure, cfg, now, tenants, vms, report)
     due = now.hour == cfg.summary_hour and now.minute < cfg.interval.total_seconds() // 60
-    if due and (report.unhealthy or report.blind):
+    if due and (report.unhealthy or report.blind or report.saturated):
         report.findings.append({
             "rule": "daily-summary",
             "severity": "warning",
@@ -639,6 +653,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
             "episode": f"summary|{now.date().isoformat()}",
             "observed": {
                 "notAvailableCount": len(report.unhealthy),
+                "saturatedWithoutLatency": report.saturated,
                 "notAvailable": report.unhealthy[:300],
                 "blind": report.blind,
             },
@@ -664,6 +679,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{report.tenants} tenant(s), {report.subscriptions} subscription(s), "
         f"{len(report.blind)} blind; {report.vms} VM(s), {report.running} running, "
         f"{len(report.unhealthy)} not Available, {report.series} disk series, "
+        f"{report.saturated} saturated without latency, "
         f"{len(report.gaps)} gap(s); {report.calls} call(s) in {elapsed:.0f}s"
     )
     if not report.findings:

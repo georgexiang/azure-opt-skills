@@ -19,7 +19,7 @@
 
 | `给本项目开启 VM 主动巡检`                     | `watch`              | 不加 `--scope`，确定 `<tools-home>` 和固定 `<commit>` 并核对 sha256，用按固定 commit 下载脚本的命令试跑一次，报告租户、订阅、blind、VM 数和耗时，再在专用会话中创建带 `azure` 凭据的 5 分钟 cron；不复制脚本到计算机目录 |
 | 巡检 cron 唤醒，含 `daily-summary`           | `watch`              | 按订阅、区域和原因分组汇总数量和代表 VM，不逐台诊断；看不到的租户按原因汇总 |
-| 巡检 cron 唤醒，findings 分成 5 组           | `watch`              | 先发 critical 事实，每组派一个只读 subagent 诊断，主 Agent 汇总后发布，subagent 不发消息 |
+| 巡检 cron 唤醒，findings 分成 5 组           | `watch`              | 先发 critical 事实，按组顺序诊断，不启动 subagent、不并发执行带凭据的命令，汇总后按事件发布 |
 
 专项用例：
 

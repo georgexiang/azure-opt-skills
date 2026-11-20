@@ -366,16 +366,31 @@ class WatchTests(unittest.TestCase):
         code, _, summary, _ = self.watch()
         self.assertEqual(code, 0, summary)
 
-    def test_saturation_onset_is_reported_per_lun(self) -> None:
+    def test_saturation_with_slow_disk_is_reported_per_lun(self) -> None:
         self.world["vms"] = [vm(VM_A)]
         self.world["metrics"] = {
             f"{VM_A}|Data Disk IOPS Consumed Percentage|1": {"base": 40.0, "recent": 97.0, "recentMinutes": 12},
+            f"{VM_A}|Data Disk Latency|1": {"base": 30.0},
         }
         code, body, _, _ = self.watch()
         self.assertEqual(code, 1)
         self.assertEqual(self.rules(body), [("disk-saturation", "vm-a")])
         assert body is not None
         self.assertEqual(body["findings"][0]["observed"]["series"], "LUN 1")
+
+    def test_saturation_without_latency_is_only_counted(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        self.world["metrics"] = {
+            f"{VM_A}|Data Disk Bandwidth Consumed Percentage|1": {"base": 40.0, "recent": 100.0, "recentMinutes": 12},
+            f"{VM_A}|Data Disk Latency|0": {"base": 30.0},
+        }
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("1 saturated without latency", summary)
+        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        self.assertEqual(code, 1)
+        assert body is not None
+        self.assertEqual(body["findings"][0]["observed"]["saturatedWithoutLatency"], 1)
 
     def test_expired_login_wakes_the_agent_without_calling_azure(self) -> None:
         (self.home / "fail-home").write_text("")
