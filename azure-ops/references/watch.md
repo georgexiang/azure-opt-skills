@@ -7,7 +7,7 @@
 - 每个租户分别调用 Resource Graph（每批 100 个订阅）。
 - 指标按"租户/订阅/区域"分组，使用 Azure Monitor 的 `metrics:getBatch`，每批最多 50 台 VM，默认并发 16 个（`--workers`）。约 5,400 台 VM、2 个订阅时，一次完整巡检约 420 次调用、174 秒。只有疑似异常的序列，才额外读取一次 7 天基线。
 
-`--scope` 是可选参数，只在临时缩小范围时使用。
+`--tenant <tenant-uuid>`（可重复）只巡检指定租户，用于"一个凭据一个 cron"的分工；`--scope` 只在临时缩小到订阅或资源组时使用。
 
 脚本不保存状态。是否为"新发生"，根据 Azure 记录的状态变化（`previousAvailabilityState` 与当前状态不同）和指标历史计算，因此每个事件只唤醒一次；持续未恢复的 VM 汇总进每日一次的 `daily-summary`。注意 Resource Graph 的 `occurredTime` 会随记录刷新而更新，不是状态的开始时间；真实开始时间需要用 Resource Health 历史查询。
 
@@ -42,6 +42,8 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 
 带 credentials 的执行运行在本轮专用的临时计算机上，结束后文件就会丢弃，cron 每次触发也是新的临时计算机。所以**不要把脚本复制到任何计算机目录**。cron 命令每次都从本 pack 仓库按固定 commit 下载这三个脚本再运行。
 
+**多个 Azure 凭据**：每个 Azure 文件凭据都是一个 `az login` 缓存，都写在 `~/.azure`，平台不允许一条命令同时携带多个（"overlapping file paths"）。Project 里有多个 Azure 凭据、每个对应不同租户时，**每个凭据建一个 cron**：`script.credentials` 只放这一个凭据，命令追加 `--tenant <该凭据负责的租户>`，`title` 写成 "Azure IaaS 巡检 · <租户名>"，都发回同一个巡检告警会话。不要为巡检启动 swarm 或 subagent：各个 cron 本来就会并行运行，没问题时不调用模型。用户要求巡检"所有租户"时，先列出 Project 可用的 Azure 凭据及各自的租户（不同凭据可能是不同账号，用 `account show` 核对），请用户确认分工，再逐个按下面的步骤启用。
+
 1. 在**不带 credentials** 的执行中记下持久 HOME 为 `<tools-home>`（绝对路径），并确认 `bash <skill-dir>/scripts/azure_cli.sh --tools-home <tools-home> --check` 通过；失败则用 `--ensure` 安装。
 2. 确定固定版本：用 `git ls-remote https://github.com/georgexiang/azure-opt-skills refs/heads/main` 取得 `<commit>`（40 位），下载该 commit 的 `azure-ops/scripts/watch.py`，与 `<skill-dir>/scripts/watch.py` 比较 sha256。不一致说明 skill pack 还没同步到这个 commit：停止，请管理员在 Skill packs 中 Sync，不要用不一致的版本启用。
 3. 生成巡检命令 `<watch-command>`，原样使用，只替换 `<commit>` 和 `<tools-home>`：
@@ -54,9 +56,9 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
    - VM 数为 0 时，先解决可见性问题，不要启用。
    - 摘要行出现 `skipped at deadline` 时，先在命令末尾加 `--workers 24` 再试一次；仍然出现的话，把 cron 周期改为 10 分钟，同时追加 `--interval-minutes 10`。
 5. 用 `cron` 工具创建：
-   - `title`："Azure IaaS 巡检"
+   - `title`："Azure IaaS 巡检"；多个凭据时为 "Azure IaaS 巡检 · <租户名>"
    - `schedule`：`{"everyMs": 300000}`
-   - `script`：`{"command": "<watch-command>", "credentials": ["azure"]}`。不要追加 `--scope`，除非用户明确要求缩小范围。
+   - `script`：`{"command": "<watch-command>", "credentials": ["<该凭据 handle>"]}`。只有一个凭据时不加 `--tenant`；多个凭据时加上它负责的 `--tenant`。不要追加 `--scope`，除非用户明确要求缩小范围。
    - `task`："加载 azure-ops skill，按 references/watch.md 的'每次唤醒的处理流程'处理本次巡检结果。"。任务说明**始终只保留这一句**：规则和处理方式都以 skill 为准，不要往任务说明里追加规则、凭据要求或暂停条件。运行中的发现只写进 fire note。
    - 投递目标：不传 destination，默认发回创建 cron 的会话。应在 Project 内专门用于巡检告警的会话中创建；当前会话不是专用会话时，先请用户新建一个专用会话。只有用户明确指定，并且该目标出现在 "Where scheduled tasks post" 列表中时，才设置 `destinationKey`。
 6. cron 在后台使用凭据需要所有者单独授权；试运行报告缺少授权时，发起申请，不要绕过。

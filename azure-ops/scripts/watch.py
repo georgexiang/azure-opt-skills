@@ -104,6 +104,7 @@ class CollectorError(Exception):
 @dataclass
 class Config:
     tools_home: str
+    tenants: list[str]
     scopes: list[tuple[str, str | None]]
     arm: str
     metrics_endpoint: str
@@ -161,6 +162,12 @@ def iso(moment: datetime) -> str:
 def is_uuid(text: str) -> bool:
     parts = text.lower().split("-")
     return [len(p) for p in parts] == [8, 4, 4, 4, 12] and all(set(p) <= HEX for p in parts)
+
+
+def parse_tenant(text: str) -> str:
+    if is_uuid(text.strip()):
+        return text.strip().lower()
+    raise argparse.ArgumentTypeError("tenant must be a tenant UUID")
 
 
 def parse_scope(text: str) -> tuple[str, str | None]:
@@ -695,7 +702,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     wanted = {sub for sub, _ in cfg.scopes}
     tenants: dict[str, Tenant] = {}
     report.tenant_names = azure.tenants()
-    for tenant_id in report.tenant_names:
+    for tenant_id in cfg.tenants or list(report.tenant_names):
         try:
             tenant = azure.open_tenant(tenant_id)
         except CollectorError as exc:
@@ -806,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
         "failure, printed as JSON."
     )
     parser.add_argument("--tools-home", required=True)
+    parser.add_argument("--tenant", action="append", default=[], type=parse_tenant)
     parser.add_argument("--scope", action="append", default=[], type=parse_scope)
     parser.add_argument("--arm-endpoint", default="https://management.azure.com")
     parser.add_argument("--metrics-endpoint", default="https://{region}.metrics.monitor.azure.com")
@@ -828,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tools-home must be an absolute path")
     cfg = Config(
         tools_home=args.tools_home,
+        tenants=list(dict.fromkeys(args.tenant)),
         scopes=args.scope,
         arm=args.arm_endpoint,
         metrics_endpoint=args.metrics_endpoint,

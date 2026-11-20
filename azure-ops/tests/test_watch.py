@@ -471,6 +471,39 @@ class WatchTests(unittest.TestCase):
         self.assertIn("2 disk batch(es) skipped at deadline", summary)
         self.assertIn("0 disk series", summary)
 
+    def test_tenant_limits_the_sweep_and_hides_other_tenants(self) -> None:
+        guest = vm_id(GUEST_SUB, "vm-guest", "guest-rg")
+        self.world["tenants"][LOCKED_TENANT] = []
+        (self.home / "known-tenants.json").write_text(json.dumps([{"t": HOME_TENANT}, {"t": LOCKED_TENANT}]))
+        (self.home / f"fail-{LOCKED_TENANT}").write_text("")
+        self.world["vms"] = [vm(VM_A), vm(guest, location="eastasia")]
+        self.world["health"] = [
+            health(VM_A, "Unavailable", self.now - timedelta(minutes=3)),
+            health(guest, "Unavailable", self.now - timedelta(minutes=3)),
+        ]
+        code, body, summary, _ = self.watch("--tenant", GUEST_TENANT.upper())
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("health-onset", "vm-guest")])
+        assert body is not None
+        self.assertNotIn("blind", body)
+        self.assertIn("1 tenant(s), 1 subscription(s), 0 blind; 1 VM(s)", summary)
+        self.assertNotIn(HOME_TENANT, {c[2] for c in FakeArm.calls if c[0] == "POST"})
+
+    def test_unreadable_requested_tenant_is_a_collector_error(self) -> None:
+        self.world["tenants"][LOCKED_TENANT] = []
+        (self.home / f"fail-{LOCKED_TENANT}").write_text("")
+        code, body, _, _ = self.watch("--tenant", LOCKED_TENANT)
+        self.assertEqual(code, 1)
+        assert body is not None
+        error = body["findings"][0]["observed"]["error"]
+        self.assertTrue(error.startswith("NO_COVERAGE"))
+        self.assertIn(LOCKED_TENANT, error)
+
+    def test_rejects_tenant_that_is_not_a_uuid(self) -> None:
+        code, _, _, result = self.watch("--tenant", "contoso.onmicrosoft.com")
+        self.assertEqual(code, 2)
+        self.assertIn("tenant must be a tenant UUID", result.stderr)
+
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")
         self.assertEqual(code, 2)
