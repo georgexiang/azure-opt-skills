@@ -1,7 +1,7 @@
 ---
 name: azure-ops
 description: >-
-  使用中文或英文诊断并解释 Azure 运维问题。适用于 Azure VM 全面健康检查、CPU、内存、磁盘、网络、
+  使用中文或英文诊断并解释 Azure 运维问题。适用于 Azure VM 全面健康检查、全租户主动巡检（VM 降级、平台事件、磁盘延迟预警）、CPU、内存、磁盘、网络、
   Resource Health、订阅级 Service Health、主机名或 VM 资源查询、AKS 运维问题移交、Azure 产品问题，以及生成 Azure
   Support 工单草稿；实际提交需移交独立的 azure-support-ticket Skill 或批准的外部流程。
 requiredCapabilities:
@@ -30,6 +30,7 @@ requiredCapabilities:
 | 主机名、计算机名、VM 名称或资源 ID 查询                           | `vm lookup`                                    | `references/health-and-lookup.md` |
 | Azure 概念、产品、SKU、配额、价格、区域、对比或用户粘贴的错误解释 | `qa`                                           | 仅阅读本文件                      |
 | 生成 Azure Support 工单草稿或准备提交                             | `support-case`                                 | `references/support-case.md`      |
+| 启用持续主动巡检，或处理巡检 cron 的唤醒                          | `watch`                                        | `references/watch.md`             |
 | AKS 故障、已知问题或集群成本优化                                  | 移交独立 `azure-aks-ops`                        | 按下述 AKS 移交规则               |
 
 用户要求实际提交时，本 Skill 仍只生成草稿；在当前会话将已确认事实交给独立的 `azure-support-ticket` Skill，由其核验当前 Project 凭据、目标权限并重新确认提交，可直接在当前项目 Sandbox 执行。若未导入该 Skill，则使用 Azure Portal 或组织批准的外部流程。下述只读命令与身份限制适用于 `azure-ops` 诊断流程，不禁止独立提交 Skill 使用本项目获授权的 Support 写权限身份。
@@ -46,7 +47,7 @@ AKS 请求先检查当前宿主是否已导入 `azure-aks-ops`，存在则移交
 2. 记录实际 Skill 绝对目录 `<skill-dir>` 和同一个 `sandbox_id`；在不带 credentials 的执行中记下持久 HOME 为 `<tools-home>`，运行 `bash skills/azure-ops/scripts/install_azure_cli.sh --check`。失败则后台运行安装器并等待，复检通过再继续。安装器只写当前 Scope 的持久工具目录，不修改认证缓存或 Sandbox 镜像。
 3. 从当前对话中解析缺失值。只有当所选分支缺少订阅、资源组、VM 名称或时间范围就无法安全继续时，才向用户询问。
 4. 绝不猜测资源组、资源 ID、NIC 名称、磁盘名称、SKU 上限、订阅或 Support Problem Classification ID。
-5. 先完成下述原生凭据选择，每条实时命令都在同一个 `execute` 中显式携带 `credentials: [所选handle]` 和目录指定的 execution scope、同一个 sandbox_id。所有诊断命令必须通过 guard，例如：`python3 <skill-dir>/scripts/az_guard.py --tools-home <tools-home> -- account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,user:user.name}' -o json`。分支 reference 中省略的 `--tools-home` 执行时均须补齐；绝对工具路径与临时凭据 HOME 分离，不在临时 HOME 重新安装。
+5. 先完成下述原生凭据选择，每条实时命令都在同一个 `execute` 中显式携带 `credentials: [所选handle]` 和目录指定的 execution scope、同一个 sandbox_id。除 `watch` 分支的 `scripts/watch.py` 这一受信任的固定只读巡检路径外，所有诊断命令必须通过 guard，例如：`python3 <skill-dir>/scripts/az_guard.py --tools-home <tools-home> -- account show --subscription <subscription-uuid> --query '{subscription:id,tenant:tenantId,user:user.name}' -o json`。分支 reference 中省略的 `--tools-home` 执行时均须补齐；绝对工具路径与临时凭据 HOME 分离，不在临时 HOME 重新安装。
 6. 每个参数都作为单独的 shell 引号参数传递。绝不把用户文本插入 shell 语法、命令替换、重定向、管道、环境变量赋值或选项名称。
 7. 执行 `vm full` 时复用共享的 VM Inventory 和 SKU 结果；不要为每项指标重复查询。
 8. 将 `null`、空序列、权限错误和不可用指标视为缺失数据。缺失数据应标为 `N/A` 或无法判定，绝不能判为健康。

@@ -135,9 +135,11 @@ azure-opt-skills/
     scripts/
       install_azure_cli.sh
       az_guard.py
+      watch.py
     tests/
       cases.md
       test_az_guard.py
+      test_watch.py
 ```
 
 在 QM Admin Skills 页面注册该 Git Pack：
@@ -197,6 +199,7 @@ Web UI 的直接创建表单仅支持 `name`、`description`、`body` 与 `scope
 - `azure-ops/references/health-and-lookup.md`：Resource Health、Service Health 与主机名查找工作流。
 - `azure-ops/references/support-case.md`：Support 分类查询、工单草稿与外部提交流程指引。
 - `azure-ops/scripts/install_azure_cli.sh`：在当前 Scope 的持久化 `$HOME` 中安装固定版本 Azure CLI。
+- `azure-ops/scripts/watch.py`：cron 主动巡检，默认覆盖登录身份可读的全部租户和全部订阅，只读读取 Resource Graph 与 Azure Monitor（批量指标接口），发现 VM 降级、平台事件、磁盘延迟/饱和后唤醒 Agent；规则与启用流程见 `azure-ops/references/watch.md`。
 - `azure-ops/scripts/az_guard.py`：只读命令白名单、ARM REST 限制、输出限幅、敏感信息脱敏与 Support 写操作拒绝。
 - `azure-ops/tests/`：行为用例与 guard 脚本单元测试。
 
