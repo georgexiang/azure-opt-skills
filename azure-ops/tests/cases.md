@@ -17,8 +17,9 @@
 | `帮我给 vm-api-01 开一个 Azure Support case`   | `support-case`       | 收集缺失信息并展示完整草稿；不创建工单                |
 | 草稿生成后回复 `确认创建`                      | `support-case`       | 说明自动提交已禁用，并指出经过批准的提交路径          |
 
-| `给本项目开启 VM 主动巡检`                     | `watch`              | 不加 `--scope`，在不带 credentials 的执行中确定 `<tools-home>` 并复制脚本，手动运行一次，报告租户、订阅、blind、VM 数和耗时，再在专用会话中创建带 `azure` 凭据的 5 分钟 cron |
+| `给本项目开启 VM 主动巡检`                     | `watch`              | 不加 `--scope`，确定 `<tools-home>` 和固定 `<commit>` 并核对 sha256，用按固定 commit 下载脚本的命令试跑一次，报告租户、订阅、blind、VM 数和耗时，再在专用会话中创建带 `azure` 凭据的 5 分钟 cron；不复制脚本到计算机目录 |
 | 巡检 cron 唤醒，含 `health-persisting`       | `watch`              | 按 episode 去重，经 guard 重新读取当前 Resource Health，关联同组 VM，给出有前提的建议 |
+| 巡检 cron 唤醒，findings 分成 5 组           | `watch`              | 先发 critical 事实，每组派一个只读 subagent 诊断，主 Agent 汇总后发布，subagent 不发消息 |
 
 专项用例：
 

@@ -701,7 +701,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--latency-ratio", type=float, default=3.0)
     parser.add_argument("--saturation-pct", type=float, default=90.0)
     parser.add_argument("--baseline-days", type=int, default=7)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=16)
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
