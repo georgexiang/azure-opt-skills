@@ -44,6 +44,7 @@ HEALTH_QUERY = """HealthResources
 | where target contains '/providers/microsoft.compute/virtualmachines/'
 | project target,
   state = tostring(properties.availabilityState),
+  previous = tostring(properties.previousAvailabilityState),
   occurred = tostring(properties.occurredTime),
   reasonType = tostring(properties.reasonType),
   title = tostring(properties['title']),
@@ -106,8 +107,7 @@ class Config:
     interval: timedelta
     health_lag: timedelta
     metric_lag: timedelta
-    reminder: timedelta
-    coverage_hour: int
+    summary_hour: int
     window: int
     sustain: int
     latency_ms: float
@@ -126,7 +126,7 @@ class Report:
     subscriptions: int = 0
     vms: int = 0
     running: int = 0
-    unhealthy: int = 0
+    unhealthy: list[dict[str, Any]] = field(default_factory=list)
     series: int = 0
     calls: int = 0
 
@@ -404,30 +404,26 @@ def check_health(
         state = str(row.get("state", ""))
         if vm is None or state not in UNHEALTHY or vm.get("powerState") in STOPPED:
             continue
-        report.unhealthy += 1
-        since = parse_time(str(row.get("occurred", "")))
-        if since is None:
-            report.gaps.append(f"{vm['name']}: {state} without occurredTime")
-            continue
-        age = now - since
-        if timedelta(0) <= age <= window:
-            rule = "health-onset"
-        elif age >= cfg.reminder and (age % cfg.reminder) < cfg.interval:
-            rule = "health-persisting"
-        else:
+        detail = {
+            "reasonType": row.get("reasonType") or None,
+            "title": row.get("title") or None,
+            "summary": row.get("summary") or None,
+        }
+        report.unhealthy.append({**vm_ref(vm), "availabilityState": state, **detail})
+        previous = str(row.get("previous", ""))
+        changed = parse_time(str(row.get("occurred", "")))
+        if previous == state or changed is None or not timedelta(0) <= now - changed <= window:
             continue
         report.findings.append({
-            "rule": rule,
+            "rule": "health-onset",
             "severity": UNHEALTHY[state],
             "resource": vm_ref(vm),
-            "episode": f"{vm['id']}|health|{state}|{iso(since)}",
+            "episode": f"{vm['id']}|health|{previous}->{state}|{iso(changed)}",
             "observed": {
                 "availabilityState": state,
-                "since": iso(since),
-                "ageHours": round(age.total_seconds() / 3600, 1),
-                "reasonType": row.get("reasonType") or None,
-                "title": row.get("title") or None,
-                "summary": row.get("summary") or None,
+                "previousAvailabilityState": previous or None,
+                "changedAt": iso(changed),
+                **detail,
             },
         })
 
@@ -634,13 +630,18 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     check_health(cfg, now, vms, health, report)
     check_annotations(cfg, now, vms, annotations, report)
     check_disks(azure, cfg, now, tenants, vms, report)
-    if report.blind and now.hour == cfg.coverage_hour and now.minute < cfg.interval.total_seconds() // 60:
+    due = now.hour == cfg.summary_hour and now.minute < cfg.interval.total_seconds() // 60
+    if due and (report.unhealthy or report.blind):
         report.findings.append({
-            "rule": "coverage-report",
+            "rule": "daily-summary",
             "severity": "warning",
             "resource": None,
-            "episode": f"coverage|{now.date().isoformat()}",
-            "observed": {"blind": report.blind},
+            "episode": f"summary|{now.date().isoformat()}",
+            "observed": {
+                "notAvailableCount": len(report.unhealthy),
+                "notAvailable": report.unhealthy[:300],
+                "blind": report.blind,
+            },
         })
 
 
@@ -662,7 +663,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"azure-ops watch {iso(now)}: {len(report.findings)} finding(s); "
         f"{report.tenants} tenant(s), {report.subscriptions} subscription(s), "
         f"{len(report.blind)} blind; {report.vms} VM(s), {report.running} running, "
-        f"{report.unhealthy} not Available, {report.series} disk series, "
+        f"{len(report.unhealthy)} not Available, {report.series} disk series, "
         f"{len(report.gaps)} gap(s); {report.calls} call(s) in {elapsed:.0f}s"
     )
     if not report.findings:
@@ -693,8 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval-minutes", type=int, default=5)
     parser.add_argument("--health-lag-minutes", type=int, default=10)
     parser.add_argument("--metric-lag-minutes", type=int, default=3)
-    parser.add_argument("--reminder-hours", type=int, default=24)
-    parser.add_argument("--coverage-hour-utc", type=int, default=1)
+    parser.add_argument("--summary-hour-utc", type=int, default=1)
     parser.add_argument("--window-minutes", type=int, default=15)
     parser.add_argument("--sustain-minutes", type=int, default=10)
     parser.add_argument("--latency-ms", type=float, default=20.0)
@@ -715,8 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         interval=timedelta(minutes=args.interval_minutes),
         health_lag=timedelta(minutes=args.health_lag_minutes),
         metric_lag=timedelta(minutes=args.metric_lag_minutes),
-        reminder=timedelta(hours=args.reminder_hours),
-        coverage_hour=args.coverage_hour_utc,
+        summary_hour=args.summary_hour_utc,
         window=args.window_minutes,
         sustain=args.sustain_minutes,
         latency_ms=args.latency_ms,

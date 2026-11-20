@@ -174,9 +174,9 @@ def vm(vid: str, power: str = "PowerState/running", location: str = "westeurope"
     }
 
 
-def health(target: str, state: str, since: datetime) -> dict[str, Any]:
-    return {"target": target, "state": state, "occurred": iso(since), "reasonType": "Unplanned",
-            "title": state, "summary": "platform reported"}
+def health(target: str, state: str, changed: datetime, previous: str = "Available") -> dict[str, Any]:
+    return {"target": target, "state": state, "previous": previous, "occurred": iso(changed),
+            "reasonType": "Unplanned", "title": state, "summary": "platform reported"}
 
 
 class WatchTests(unittest.TestCase):
@@ -222,8 +222,8 @@ class WatchTests(unittest.TestCase):
     def report_case(self) -> None:
         self.world["vms"] = [vm(VM_A), vm(VM_B)]
         self.world["health"] = [
-            health(VM_A, "Degraded", self.now - timedelta(days=20, minutes=2)),
-            health(VM_B, "Degraded", self.now - timedelta(days=20, hours=1)),
+            health(VM_A, "Degraded", self.now - timedelta(minutes=2), previous="Degraded"),
+            health(VM_B, "Degraded", self.now - timedelta(days=20, hours=1), previous="Unknown"),
         ]
         self.world["annotations"] = [{
             "target": VM_B, "annotation": "AcceleratedNetworkingDegraded",
@@ -241,7 +241,7 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(
             self.rules(body),
-            [("disk-latency", "vm-a"), ("health-persisting", "vm-a"), ("platform-event", "vm-b")],
+            [("disk-latency", "vm-a"), ("platform-event", "vm-b")],
         )
         assert body is not None
         disk = next(f for f in body["findings"] if f["rule"] == "disk-latency")
@@ -286,6 +286,39 @@ class WatchTests(unittest.TestCase):
         self.assertIn("1 tenant(s), 1 subscription(s)", summary)
         self.assertIn("1 VM(s)", summary)
 
+    def test_refreshed_record_of_an_old_degradation_is_not_new(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        self.world["health"] = [health(VM_A, "Degraded", self.now - timedelta(minutes=1), previous="Degraded")]
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("1 not Available", summary)
+
+    def test_escalation_between_unhealthy_states_is_new(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        self.world["health"] = [health(VM_A, "Unavailable", self.now - timedelta(minutes=4), previous="Degraded")]
+        code, body, _, _ = self.watch()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("health-onset", "vm-a")])
+        assert body is not None
+        observed = body["findings"][0]["observed"]
+        self.assertEqual((observed["previousAvailabilityState"], observed["availabilityState"]), ("Degraded", "Unavailable"))
+
+    def test_daily_summary_lists_every_unhealthy_vm_and_blind_tenant_once(self) -> None:
+        self.report_case()
+        self.world["tenants"][LOCKED_TENANT] = []
+        (self.home / "known-tenants.json").write_text(json.dumps([HOME_TENANT, LOCKED_TENANT]))
+        (self.home / f"fail-{LOCKED_TENANT}").write_text("")
+        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        self.assertEqual(code, 1)
+        assert body is not None
+        summary = next(f for f in body["findings"] if f["rule"] == "daily-summary")
+        self.assertEqual(summary["observed"]["notAvailableCount"], 2)
+        self.assertEqual(sorted(v["name"] for v in summary["observed"]["notAvailable"]), ["vm-a", "vm-b"])
+        self.assertIn("AADSTS50076", summary["observed"]["blind"][0])
+        self.assertEqual(summary["episode"], f"summary|{self.now.date().isoformat()}")
+        code, body, _, _ = self.watch("--summary-hour-utc", str((self.now.hour + 1) % 24))
+        self.assertNotIn("daily-summary", [f["rule"] for f in (body or {"findings": []})["findings"]])
+
     def test_locked_tenant_is_blind_and_reported_once_a_day(self) -> None:
         self.world["tenants"][LOCKED_TENANT] = []
         (self.home / "known-tenants.json").write_text(json.dumps([HOME_TENANT, LOCKED_TENANT]))
@@ -293,9 +326,9 @@ class WatchTests(unittest.TestCase):
         code, _, summary, _ = self.watch()
         self.assertEqual(code, 0, summary)
         self.assertIn("2 tenant(s), 3 subscription(s), 1 blind", summary)
-        code, body, _, _ = self.watch("--coverage-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
         self.assertEqual(code, 1)
-        self.assertEqual(self.rules(body), [("coverage-report", None)])
+        self.assertEqual(self.rules(body), [("daily-summary", None)])
         assert body is not None
         self.assertIn("AADSTS50076", body["blind"][0])
 
@@ -308,7 +341,7 @@ class WatchTests(unittest.TestCase):
 
     def test_next_quiet_fire_wakes_nobody(self) -> None:
         self.report_case()
-        self.world["health"] = [health(VM_A, "Degraded", self.now - timedelta(days=20, minutes=40))]
+        self.world["health"] = [health(VM_A, "Degraded", self.now - timedelta(minutes=40))]
         self.world["annotations"][0]["occurred"] = iso(self.now - timedelta(minutes=40))
         self.world["metrics"][f"{VM_A}|Data Disk Latency|0"]["recentMinutes"] = 200
         code, body, summary, _ = self.watch()

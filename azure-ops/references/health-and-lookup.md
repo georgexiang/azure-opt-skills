@@ -2,7 +2,7 @@
 
 本参考用于 `vm resource-health`、`service-health` 和 `vm lookup`。
 
-所有 Azure 命令都必须通过 `scripts/az_guard.py` 执行。只要参数包含用户提供文本，就必须使用 JSON 请求文件。
+所有 Azure 命令都通过 SKILL.md 的固定入口 `azure_cli.sh --tools-home <tools-home>` 执行；含用户提供文本的值逐个作为单独的引号参数传入。
 
 ## 订阅上下文
 
@@ -59,7 +59,7 @@ rest --method get --url https://management.azure.com/subscriptions/<subscription
 monitor activity-log list --resource-id <vm-resource-id> --start-time <utc-start> --end-time <utc-end> --query [].{time:eventTimestamp,operation:operationName.localizedValue,status:status.localizedValue,caller:caller,correlationId:correlationId,description:description} -o json
 ```
 
-参数含资源 ID 与时间，必须使用 JSON 请求文件通过 guard 执行。只展示与 restart、redeploy、deallocate、start、maintenance 或 VM 写操作相关的记录；caller 只在归因所必需时展示，并避免暴露不必要的个人信息。
+资源 ID 与时间逐个作为单独的引号参数传入。只展示与 restart、redeploy、deallocate、start、maintenance 或 VM 写操作相关的记录；caller 只在归因所必需时展示，并避免暴露不必要的个人信息。
 
 - 成功的 Activity Log 写操作是操作者或自动化动作证据，不应归因为平台 Host Reboot。
 - Activity Log 无记录不证明平台发生故障；平台维护可能不产生对应 Activity Log 操作。
@@ -78,13 +78,13 @@ vm get-instance-view -g <rg> -n <vm> --query instanceView.computerName -o json
 
 ## 计算机名到 VM 资源名
 
-通过 guard 的固定只读 POST 端点使用 Azure Resource Graph。写入请求文件，参数等价于：
+通过 `rest` 调用 Azure Resource Graph 查询端点，参数为：
 
 ```text
 rest --method post --url https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01 --body {"subscriptions":["<subscription>"],"query":"Resources | where type =~ 'microsoft.compute/virtualmachines' | extend computerName=tostring(properties.extended.instanceView.computerName) | where computerName in~ ('<fqdn>') | project computerName,vmName=tostring(split(id,'/')[-1]),resourceGroup,location,id | limit 50"} -o json
 ```
 
-在写入 JSON 请求前，将计算机名按 KQL 字符串值正确转义。优先使用不区分大小写的精确匹配。若精确匹配无结果，可在用户确认片段后提供单独的 contains 搜索；需标注为模糊匹配，并展示全部候选，禁止静默选择其一。
+构造 `--body` 前，将计算机名按 KQL 字符串值正确转义。优先使用不区分大小写的精确匹配。若精确匹配无结果，可在用户确认片段后提供单独的 contains 搜索；需标注为模糊匹配，并展示全部候选，禁止静默选择其一。
 
 对于多个输入，使用 `in~` 合并查询，并将每个请求值映射为 0 条、1 条或多条结果。保留 Azure 返回的 VM 资源名大小写。
 

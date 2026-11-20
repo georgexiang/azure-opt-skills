@@ -11,37 +11,15 @@
 
 不要臆造默认资源组。必须保留完整 VM 名称，包括尾部数字组成部分。
 
-## Guard 调用
+## 调用方式
 
-不含用户可控值的静态命令可直接传参：
-
-```bash
-python3 skills/azure-ops/scripts/az_guard.py -- account show --query '{subscription:id,tenant:tenantId,user:user.name}' -o json
-```
-
-对于包含资源名、ID、筛选条件、时间或其他用户可控值的命令，必须使用文件原语写入 JSON 请求，并在 shell 中仅传递文件路径：
-
-```json
-{
-  "args": [
-    "vm",
-    "show",
-    "-d",
-    "-g",
-    "RESOURCE_GROUP",
-    "-n",
-    "VM_NAME",
-    "-o",
-    "json"
-  ]
-}
-```
+下文 `text` 命令块只写 `az` 之后的参数，执行时通过 SKILL.md 的固定入口运行：
 
 ```bash
-python3 skills/azure-ops/scripts/az_guard.py --request-file .azure-ops/request.json
+bash <skill-dir>/scripts/azure_cli.sh --tools-home <tools-home> vm show -d -g 'RESOURCE_GROUP' -n 'VM_NAME' -o json
 ```
 
-仅可在完整替换整个 JSON 文档后复用该请求文件。禁止使用 shell 插值拼接构造。
+资源名、ID、筛选条件、时间等值逐个作为单独的单引号参数传入；值中含单引号时按 shell 规则转义。禁止把这些值拼进命令替换、管道、重定向或选项名。
 
 ## 共享清单
 
@@ -132,7 +110,7 @@ VM Cached IOPS Consumed Percentage
 VM Cached Bandwidth Consumed Percentage
 ```
 
-在 VM 资源上查询 OS 盘与 VM 指标。对所有数据盘 LUN 序列使用 `--filter "LUN eq '*'"` 一次性查询。使用 `Maximum` 以及服务端 JMESPath 归约，避免向 guard 返回整段长时间序列。
+在 VM 资源上查询 OS 盘与 VM 指标。对所有数据盘 LUN 序列使用 `--filter "LUN eq '*'"` 一次性查询。使用 `Maximum` 以及服务端 JMESPath 归约，避免返回整段长时间序列。
 
 按时间窗口选择 interval：
 

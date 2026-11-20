@@ -2,7 +2,7 @@
 
 当用户提出要起草、开启、创建或提交 Azure 技术支持工单时，使用本流程。
 
-`azure-ops` 会准备完整工单，但不通过诊断 guard 提交。用户要求实际提交时，在当前会话使用独立的 `azure-support-ticket` Skill：它可在任何具备获授权 Azure 凭据和目标 Support 写权限的 Project 中执行，不要求更换 Sandbox 或绑定额外环境。未导入该 Skill 时使用 Azure Portal 或组织批准的流程。
+`azure-ops` 只准备完整工单，不提交。用户要求实际提交时，在当前会话使用独立的 `azure-support-ticket` Skill：它可在任何具备获授权 Azure 凭据和目标 Support 写权限的 Project 中执行，不要求更换 Sandbox 或绑定额外环境。未导入该 Skill 时使用 Azure Portal 或组织批准的流程。
 
 ## 收集用户提供事实
 
@@ -19,7 +19,7 @@
 
 ## 通过只读查询解析分类
 
-不要猜测 Service 或 Problem Classification ID。必须通过 guard 查询：
+不要猜测 Service 或 Problem Classification ID。必须实时查询：
 
 ```text
 support services list --query [?contains(displayName,'<service keyword>')].{name:name,displayName:displayName} -o json
@@ -65,4 +65,4 @@ support services problem-classifications list --service-name <service-name> -o j
 技术资源: <verified resource ID when available>
 ```
 
-本诊断分支不构造或执行 `support in-subscription tickets create`。用户要求继续时，将已确认的非凭据事实交给独立的 `azure-support-ticket` Skill；由它在当前 Project 核验凭据与目标权限、补齐 CLI 必填联系人字段并重新确认提交。该流程直接使用 Azure CLI 的固定 Support 命令，不修改诊断 guard。若未导入提交 Skill，引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 的受控存储以便授权运维人员使用。
+本诊断分支不构造或执行 `support in-subscription tickets create`。用户要求继续时，将已确认的非凭据事实交给独立的 `azure-support-ticket` Skill；由它在当前 Project 核验凭据与目标权限、补齐 CLI 必填联系人字段并重新确认提交。该流程直接使用 Azure CLI 的固定 Support 命令。若未导入提交 Skill，引导用户使用 Azure Portal 的 Help + support 流程或组织批准的工单自动化流程。若用户要求保留草稿，应将其保存在当前 Scope 的受控存储以便授权运维人员使用。

@@ -11,7 +11,7 @@
 
 主 `SKILL.md` 负责意图路由、工作流编排与安全约束。详细命令、阈值、输出模板与执行脚本仍作为同一 Skill 的内部资产保留。
 
-仓库另提供独立 `/azure-support-ticket`，用于在**任何具备获授权 Azure 凭据和目标 Support 写权限的 Project** 中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID；直接在当前会话执行，不要求额外环境绑定。原 `/azure-ops` 和只读 guard 的权限边界保持不变。
+仓库另提供独立 `/azure-support-ticket`，用于在**任何具备获授权 Azure 凭据和目标 Support 写权限的 Project** 中，经用户复核确认后实际创建 Azure Support 工单并核验 Microsoft case ID；直接在当前会话执行，不要求额外环境绑定。原 `/azure-ops` 的只读边界由诊断身份的 Azure RBAC 保持不变。
 
 另提供独立 [`/case-summary-oncall-schedule`](case-summary-oncall-schedule/SKILL.md)：将当前项目用户上传的原始 `.md` Case、On-call 排班或混合资料导入项目日报，分别展示 `Case Summary` 和 `On-call Schedule`。任一主题明确即可保存；没有明确主题但有疑义时请求真人确认，确认不等于核实不确定业务事实。仅使用报告日上传资料，排班列表突出报告日期、不自动跨日复用；导入轮次及回复不进入新版会话摘要，普通讨论保留。依赖平台原生 `project_case_upload` 及匹配 Core/Digest 版本，不创建工单或排班台账、不需要 Azure 凭据。交互验收见 [测试清单](case-summary-oncall-schedule/tests/cases.md)。
 
@@ -34,7 +34,7 @@ GitHub 改名不等于平台已完成迁移：
 保留 knowledge-only 分析，并新增基于原生 `execute.credentials` 的 bound-readonly 执行器候选：
 检查/安装固定 CLI、tenant-specific device-code 登录并保存 Keychain、申请目标限定的共享用途、自动获取临时 user kubeconfig，
 读取控制面、node pool、节点及指定 namespace 的 Pod/Event 状态。参见 [连接流程](azure-aks-ops/references/connection.md)。
-不执行写操作、读取 Secrets/日志或运行上游 collector；不会放宽现有 `azure-ops` guard，也不需要替换 Sandbox 镜像。
+不执行写操作、读取 Secrets/日志或运行上游 collector；不需要替换 Sandbox 镜像。
 个人登录限 owner personal 会话；共享需明确批准的 AKS standing grant，不能复用仅 Support 用途的授权。
 只接受本入口捕获、绑定 tenant/object ID 的原生文件登录，不接受任意 resident Azure 缓存或环境 secret。
 
@@ -134,11 +134,9 @@ azure-opt-skills/
       support-case.md
     scripts/
       install_azure_cli.sh
-      az_guard.py
       watch.py
     tests/
       cases.md
-      test_az_guard.py
       test_watch.py
 ```
 
@@ -152,13 +150,13 @@ https://github.com/georgexiang/azure-opt-skills
 
 如需实际提交，另行导入 `azure-support-ticket` bundle。它包含提交 reference、错误证据 helper，以及独立可用的 CLI 安装器、依赖哈希锁、`azure_cli_env.sh` 和 `azure_cli.sh`；不依赖另一个 Skill 的文件路径。Support 先在不带 credentials 的持久 HOME 经 `bash skills/azure-support-ticket/scripts/azure_cli.sh --check` 自检，失败则后台 `--ensure` 并等待复检。记录实际 Skill 绝对路径与持久 `<tools-home>`；每条 Azure 操作经 `azure_cli.sh --tools-home <tools-home>`，同时在 `execute.credentials` 显式选择文件句柄。该选项只定位工具，不改变平台暂存的认证 HOME。缺少身份或用户要求重登时，按宿主 `interactive-login` 在全新临时 HOME 登录并保存到 Keychain；保存不自动授权 Project。普通调用不隐式安装、登录或重试。
 
-两个 Azure bundle 中的 `azure_cli_env.sh`、`azure_cli.sh`、`install_azure_cli.sh` 与依赖锁是同一工具链的打包副本，以便 subset 导入后独立运行。维护时在 `azure-ops/scripts` 更新后同步到 `azure-support-ticket/scripts`；行为测试强制四项字节一致。版本与路径只在每个 bundle 的 `azure_cli_env.sh` 定义，安装器检查通过实际执行入口验收。`azure-ops` 的诊断命令仍经过只读 guard，不改用 Support 直接执行流程。
+两个 Azure bundle 中的 `azure_cli_env.sh`、`azure_cli.sh`、`install_azure_cli.sh` 与依赖锁是同一工具链的打包副本，以便 subset 导入后独立运行。维护时在 `azure-ops/scripts` 更新后同步到 `azure-support-ticket/scripts`；行为测试强制四项字节一致。版本与路径只在每个 bundle 的 `azure_cli_env.sh` 定义，安装器检查通过实际执行入口验收。`azure-ops` 的诊断命令同样经 `azure_cli.sh` 执行，只读由诊断身份的 RBAC 保证。
 
 ### 三个 Azure Skill 的凭据契约
 
 `azure-ops`、`azure-support-ticket` 和 `azure-aks-ops` 共用宿主原生 `execute.credentials` 文件凭据机制：发现当前 execution handle → 核验 owner/Project grant 和用途 → 每条命令显式选择同一句柄 → 核验实际 Azure 身份与目标。credential ID 用于申请、grant ID 用于检查授权，均不是执行句柄。工具安装不带 credentials；工具路径持久，认证 HOME 临时。旧 `/v1/keychain/use`、项目 HOME 缓存和 memory 路径都不是替代入口。
 
-宿主 `interactive-login` 保存成功后返回的 Azure 文件 handle 可用于这三个 Skill；每个 Skill 仍核验自己的用途和权限，不互相扩权。新登录不自动共享给 Project；换 Azure 账号时优先创建新 service slot，避免同 service 替换保留另一身份的旧 grants。AKS 通用 handle 的共享授权还须显式批准 Azure objectId，运行器核验签名与该 ID；旧的身份绑定式 AKS handle 继续兼容。VM 保留只读 guard，AKS 保留集群/namespace 约束，Support 保留每张工单的完整确认与查重。
+宿主 `interactive-login` 保存成功后返回的 Azure 文件 handle 可用于这三个 Skill；每个 Skill 仍核验自己的用途和权限，不互相扩权。新登录不自动共享给 Project；换 Azure 账号时优先创建新 service slot，避免同 service 替换保留另一身份的旧 grants。AKS 通用 handle 的共享授权还须显式批准 Azure objectId，运行器核验签名与该 ID；旧的身份绑定式 AKS handle 继续兼容。VM 诊断只读由 RBAC 保证，AKS 保留集群/namespace 约束，Support 保留每张工单的完整确认与查重。
 
 验收分别证明：句柄与项目授权有效、平台原生暂存/清理成功、目标 Azure/Support/AKS 实际只读请求成功；`account show` 仅证明本地元数据。授权撤销、身份不匹配、scope 冲突或回收失败时停止，不回退其他缓存。源码修改或 Git Pack 同步状态不代表已上线；发布应核对三个实际 Skill 的来源提交与物化内容，并在新会话只读验证，不重复创建已有工单。
 
@@ -200,8 +198,8 @@ Web UI 的直接创建表单仅支持 `name`、`description`、`body` 与 `scope
 - `azure-ops/references/support-case.md`：Support 分类查询、工单草稿与外部提交流程指引。
 - `azure-ops/scripts/install_azure_cli.sh`：在当前 Scope 的持久化 `$HOME` 中安装固定版本 Azure CLI。
 - `azure-ops/scripts/watch.py`：cron 主动巡检，默认覆盖登录身份可读的全部租户和全部订阅，只读读取 Resource Graph 与 Azure Monitor（批量指标接口），发现 VM 降级、平台事件、磁盘延迟/饱和后唤醒 Agent；规则与启用流程见 `azure-ops/references/watch.md`。
-- `azure-ops/scripts/az_guard.py`：只读命令白名单、ARM REST 限制、输出限幅、敏感信息脱敏与 Support 写操作拒绝。
-- `azure-ops/tests/`：行为用例与 guard 脚本单元测试。
+- `azure-ops/scripts/azure_cli.sh`：固定版本 Azure CLI 的统一入口，定位持久工具目录与本次暂存的登录，不做命令过滤。
+- `azure-ops/tests/`：行为用例与巡检脚本单元测试。
 
 ## Sandbox 与认证要求
 
@@ -234,17 +232,7 @@ QM Local Sandbox 会将整个 `$HOME` 存储到 Scope 专属卷中，因此安�
 
 Azure RBAC 是最终授权边界：诊断身份保持只读，提交身份按目标 Support 权限授权，不能通过命令别名绕过。生产环境优先使用 service principal 或 managed identity。仅在 Conditional Access 允许时，才可用 Device Code 进行临时交互式登录。
 
-对于明确接受组织内所有 Scope 共享同一身份的可信 QM 部署，管理员仍可显式选择 **Admin → Shared service credentials → Env delivery** 兼容模式，配置完整的 `AZURE_OPS_TENANT_ID`、`AZURE_OPS_CLIENT_ID`、`AZURE_OPS_CLIENT_CERTIFICATE_PEM`，仅授予 Reader。原生文件凭据已被选择时，Guard 不执行该 certificate login，避免替换用户选中的 Azure 身份；此模式不是原生授权失败的 fallback，也不用于 Support 写入。
-
-当 QM 注入 target 绑定元数据时，Guard 会在命令执行前强制目标契约：
-
-- `QM_AZURE_OPS_TARGET_TENANT_ID`
-- `QM_AZURE_OPS_TARGET_SUBSCRIPTION_ID`
-- `QM_AZURE_OPS_TARGET_ALLOWLIST_JSON`（格式固定：`[{tenantId,subscriptionIds[]}]`）
-
-三项全部缺失表示兼容旧行为；只要部分缺失、UUID 非法、allowlist JSON 非法、或默认 subscription 不在 allowlist 内，Guard 都会返回 `TARGET_CONFIG_INVALID`。启用 target 绑定后，所有常规 Azure 读取命令必须落在 allowlist subscription 内，缺失 `--subscription` 时由 Guard 自动注入默认 subscription；重复或不匹配订阅将返回 `TARGET_DENIED`。Resource Graph POST 的 `subscriptions` 也必须是 allowlist 子集。
-
-用户明确要求连接/重连时，按宿主 `interactive-login` 使用全新临时 HOME、显式 tenant 的 device-code 后台登录，并用其脚本保存；取得 handle 后显式选择，再核验元数据和实际 ARM 请求。认证命令不经过诊断 guard；VM 后续读取仍经过 guard。无需先清除共享缓存，旧 `account show` 成功也不阻止用户要求的隔离重登；Conditional Access 拒绝时不反复登录绕过策略。
+用户明确要求连接/重连时，按宿主 `interactive-login` 使用全新临时 HOME、显式 tenant 的 device-code 后台登录，并用其脚本保存；取得 handle 后显式选择，再核验元数据和实际 ARM 请求。无需先清除共享缓存，旧 `account show` 成功也不阻止用户要求的隔离重登；Conditional Access 拒绝时不反复登录绕过策略。
 
 建议将权限拆分为两个身份：
 
@@ -261,21 +249,9 @@ Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可�
 
 独立 `/azure-support-ticket` 的实际提交流程是：工具自检/必要时安装并通过统一入口复检 → 搜索 Project memory 的非敏感 profile 映射 → 实时展示可访问 tenant/subscription 并精确选择目标 → 缺少匹配身份时执行 tenant-specific device-code 登录 → 核验 Support 工具与权限 → 实时解析服务与分类 → 补齐联系人、严重程度及诊断授权 → 展示完整内容并请求本次确认 → 按稳定 ticket 名称检查已有工单 → 创建一次 → 读取并核验 `supportTicketId`。超时只恢复查询，不自动换名或重复创建。技术支持计划、分类和配额 schema 以 Azure 当前规则为准，真实提交的行为验收见 `azure-support-ticket/tests/cases.md`。
 
-## Azure CLI 安全层
+## Azure CLI 权限边界
 
-统一 Skill 不会直接执行任意 `az` 参数，而是使用受控封装并强制以下要求：
-
-- 使用 argv 数组并设置 `shell=False`；绝不拼接 shell 命令。
-- 强制命令前缀白名单。
-- 拒绝 delete、update、start、stop、restart、SSH、Run Command 及其他变更操作。
-- 常规 `az rest` 仅允许对 `https://management.azure.com/` 发起 GET 请求。
-- Resource Graph 的 POST 请求仅允许固定的只读查询端点。
-- 拒绝任意请求体、输入文件与外部 URL。
-- 限制执行时长与输出大小。
-- 对 stdout 与 stderr 中的敏感信息进行脱敏。
-- 返回结构化 JSON 错误，避免模型从含糊文本中推断结果。
-
-`azure-ops` 的 Azure Support 分支仅查询分类并生成草稿，guard 仍拒绝创建。实际提交切换到独立 `azure-support-ticket` Skill，在当前 Project 使用获授权凭据执行固定 Support 命令，逐次确认、共享锁查重并核验 case ID。Skill 确认是工作流约束，不宣称为不可绕过的沙箱安全边界；工具授权、凭据作用域和 Azure RBAC 仍由平台及 Azure 强制。
+`azure-ops` 不做命令级过滤，所有 Azure CLI 调用都经 `scripts/azure_cli.sh --tools-home <tools-home>` 直接执行。只读由 Azure RBAC 强制：诊断身份只授予 Reader 类角色，写操作会被 Azure 拒绝。Skill 说明约束 Agent 只运行读取命令、每个参数单独加引号传递、不输出令牌，这是工作流约束，不是安全边界。
 
 ## 实施阶段
 
@@ -312,7 +288,7 @@ Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可�
 - 运行静态校验、安全测试与意图路由测试。
 - 使用真实只读 Azure 查询完成冒烟测试。
 - 验证 Personal 与 Project Scope 间的凭据与资源隔离。
-- 验证诊断 guard 拒绝创建；独立提交 Skill 在有权限的普通 Project 中可完成确认、创建与核验。
+- 验证诊断身份的 RBAC 拒绝写操作；独立提交 Skill 在有权限的普通 Project 中可完成确认、创建与核验。
 - 根据测试结果优化说明并减少重复查询。
 
 交付物：验收记录、已知限制与发布建议。
@@ -337,11 +313,10 @@ Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可�
 
 ### 安全验收
 
-- 白名单之外的 Azure CLI 命令会被拒绝。
-- 任意 ARM 写操作、外部 URL、输入文件与 shell 注入尝试会被拒绝。
+- 诊断身份发起的任意 ARM 写操作被 Azure RBAC 拒绝。
 - 日志与报告中不包含令牌、密钥或证书私钥。
 - 通用诊断身份不能创建或修改 Azure 资源。
-- `azure-ops` 及其 guard 不创建工单；独立提交 Skill 仅在当前 Project 获授权且用户确认后创建。
+- `azure-ops` 不创建工单；独立提交 Skill 仅在当前 Project 获授权且用户确认后创建。
 - Azure 凭据不能跨 QM Scope 复用。
 
 ## 测试场景
@@ -358,14 +333,13 @@ Project 范围、用途覆盖 Support 提交的有效共享 standing grant 可�
 - Service Health 按时间、服务与区域过滤。
 - 主机名到资源名、资源名到主机名的双向查找。
 - Azure 权限不足、认证过期与订阅选择错误。
-- 危险 Azure CLI 命令与命令注入尝试。
+- 诊断身份执行写操作时被 RBAC 拒绝。
 - Support 工单信息不完整、完整草稿生成与创建拒绝。
 
 ## 当前状态
 
 - 统一 `SKILL.md`、三个参考文件、行为用例与安全测试已完成。
-- `az_guard.py` 已实现读取白名单、REST 限制、JSON 请求隔离、输出限幅、脱敏与 Support 写操作拒绝。
 - Scope 本地 Azure CLI 安装器可在不修改 Sandbox 镜像的前提下工作。
 - Git Pack 已注册并导入到 `org:qm-local`。
-- guard 脚本单元测试通过。
+- 巡检脚本单元测试通过。
 - 目标只读 Azure 身份与真实资源冒烟测试仍待完成。

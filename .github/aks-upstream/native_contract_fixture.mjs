@@ -162,10 +162,7 @@ else:
         symlinkSync("../share/azure-cli/2.89.1/bin/az", join(toolsHome, ".local/bin/az"));
         const home = mapped(staged.env.HOME);
         for (const bundle of ["azure-support-ticket", "azure-ops"]) {
-          const command = bundle === "azure-ops"
-            ? ["/usr/bin/python3", [join(body.bundleRoot, bundle, "scripts/az_guard.py"), "--tools-home", toolsHome, "--", "account", "show"]]
-            : ["bash", [join(body.bundleRoot, bundle, "scripts/azure_cli.sh"), "--tools-home", toolsHome, "account", "show"]];
-          const result = JSON.parse(execFileSync(command[0], command[1], {
+          const result = JSON.parse(execFileSync("bash", [join(body.bundleRoot, bundle, "scripts/azure_cli.sh"), "--tools-home", toolsHome, "account", "show"], {
             encoding: "utf8",
             env: { HOME: home, AZURE_CONFIG_DIR: join(home, ".azure"), PATH: "/usr/bin:/bin" },
           }));

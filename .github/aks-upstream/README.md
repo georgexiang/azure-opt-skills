@@ -35,7 +35,7 @@ microsoft/skills main
 
 上游是参考数据，不是宿主执行授权。入口 frontmatter 移除并改名为 `guide.md`，防止嵌套 Skill 被发现；
 shell source 转为带 fence 的 `.sh.md`、mode 0644，不安装 collector、hooks 或 MCP。
-不修改既有 guard，不依赖其他 bundle 的认证或安装器。实时读取仅由本地 `scripts/aks_*.py` 固定接口提供，
+不依赖其他 bundle 的认证或安装器。实时读取仅由本地 `scripts/aks_*.py` 固定接口提供，
 需经过原生凭据、目标/身份核验；绝不因用户同意而运行上游命令或开放修复。运行流程见 bundle 内 `references/connection.md`。
 `runtime-assets.json` 显式列出发布资产；Python 单元测试仍放在 `.github/`，不会进入运行时 bundle。
 

@@ -18,7 +18,7 @@
 | 草稿生成后回复 `确认创建`                      | `support-case`       | 说明自动提交已禁用，并指出经过批准的提交路径          |
 
 | `给本项目开启 VM 主动巡检`                     | `watch`              | 不加 `--scope`，确定 `<tools-home>` 和固定 `<commit>` 并核对 sha256，用按固定 commit 下载脚本的命令试跑一次，报告租户、订阅、blind、VM 数和耗时，再在专用会话中创建带 `azure` 凭据的 5 分钟 cron；不复制脚本到计算机目录 |
-| 巡检 cron 唤醒，含 `health-persisting`       | `watch`              | 按 episode 去重，经 guard 重新读取当前 Resource Health，关联同组 VM，给出有前提的建议 |
+| 巡检 cron 唤醒，含 `daily-summary`           | `watch`              | 按订阅、区域和原因分组汇总数量和代表 VM，不逐台诊断；看不到的租户按原因汇总 |
 | 巡检 cron 唤醒，findings 分成 5 组           | `watch`              | 先发 critical 事实，每组派一个只读 subagent 诊断，主 Agent 汇总后发布，subagent 不发消息 |
 
 专项用例：

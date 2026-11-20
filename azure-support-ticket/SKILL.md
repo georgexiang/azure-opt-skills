@@ -19,13 +19,13 @@ requiredCapabilities:
 
 ## 执行边界
 
-这是独立的写入 Skill，不扩展 `azure-ops` 的只读 guard。
+这是独立的写入 Skill，不改变 `azure-ops` 诊断身份的只读 RBAC。
 
 - 直接使用当前 Project 会话可用且获授权使用的 Azure 凭据；普通项目 Sandbox 可执行提交。执行资格取决于凭据、目标权限和本次确认，而不是环境名称、attachment 或单独执行器的存在。
 - 共享授权的 audience 是 Project 而非某位申请人。长期用途覆盖项目成员提交时，任何有权进入该 Project 的成员均可复用同一有效 standing grant；不要求其本人有 Azure 登录、拥有该凭据，或 Azure 账号名与聊天姓名一致。Azure 中执行操作的是选中的共享身份，不因此证明聊天用户个人的 Azure RBAC。遵循 reference 中的身份选择规则，不跨项目复用。
 - 执行身份在目标订阅上需要 `Microsoft.Support/supportTickets/write`，通常使用 `Support Request Contributor` 或经过审核的最小权限自定义角色。已有身份具备该权限即可，无需换身份或授予资源 `Contributor` / `Owner`。角色配置由运营方完成，Skill 不执行角色分配。
-- 仅使用当前 Project 已有或经平台授权提供给该 Project 的凭据，不搜索或复制其他 Project、Personal scope 的 token/cache。不把只读 `AZURE_OPS_*` 共享诊断身份升级或转换为写入身份。
-- 本 Skill 通过 Azure CLI 直接执行 reference 列出的认证、上下文读取、服务和分类读取、本次 ticket 的读取和创建；`azure-ops` 的 guard 仍只用于诊断，不向其增加写命令。平台的工具、出网、凭据授权和目标限制仍然有效；真实被拒绝时报告具体限制，不绕过。
+- 仅使用当前 Project 已有或经平台授权提供给该 Project 的凭据，不搜索或复制其他 Project、Personal scope 的 token/cache。不把只读的共享诊断身份升级或转换为写入身份。
+- 本 Skill 通过 Azure CLI 直接执行 reference 列出的认证、上下文读取、服务和分类读取、本次 ticket 的读取和创建；`azure-ops` 仍只用于只读诊断。平台的工具、出网、凭据授权和目标限制仍然有效；真实被拒绝时报告具体限制，不绕过。
 - 更新、关闭工单、发送后续通信和修改 Azure 资源不在本 Skill 范围内。
 - 用户明确要求提交仍需复核完整内容；诊断请求、草稿请求和历史确认均不构成本次写入授权。
 

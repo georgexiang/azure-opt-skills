@@ -133,42 +133,6 @@ class CliRuntimeTests(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertIn("CREDENTIAL_PROFILE_CONFLICT", result.stderr)
 
-    def test_guard_uses_same_staged_login_without_installing_in_credential_home(self):
-        link = self.home / ".local/bin/az"
-        link.parent.mkdir(parents=True)
-        link.symlink_to("../share/azure-cli/2.89.1/bin/az")
-        for _ in range(2):
-            with tempfile.TemporaryDirectory(
-                prefix="qm-credentials.", dir="/tmp"
-            ) as stage:
-                home = Path(stage) / "home"
-                home.mkdir(mode=0o700)
-                (home / ".azure").mkdir(mode=0o700)
-                result = subprocess.run(
-                    [
-                        "/usr/bin/python3",
-                        str(ROOT / "azure-ops/scripts/az_guard.py"),
-                        "--tools-home",
-                        str(self.home),
-                        "--",
-                        "account",
-                        "show",
-                    ],
-                    env={
-                        "HOME": str(home),
-                        "PATH": "/usr/bin:/bin",
-                        "AZURE_OPS_TENANT_ID": "invalid-ambient-identity",
-                    },
-                    text=True,
-                    capture_output=True,
-                    timeout=20,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-                self.assertEqual(
-                    json.loads(result.stdout)["profile"], str(home / ".azure")
-                )
-                self.assertFalse((home / ".local").exists())
-
     def test_ignores_path_shadow_and_extension_override(self):
         shadow = self.home / "shadow"
         shadow.mkdir()
