@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import subprocess
@@ -26,6 +27,8 @@ METRICS_RESOURCE = "https://metrics.monitor.azure.com"
 VM_NAMESPACE = "microsoft.compute/virtualmachines"
 ARG_SUBSCRIPTION_CHUNK = 100
 BATCH_RESOURCE_CHUNK = 50
+OUTPUT_BUDGET = 7000
+HTTP_TIMEOUT = 30.0
 UNHEALTHY = {"Degraded": "warning", "Unavailable": "critical"}
 STOPPED = {"PowerState/deallocated", "PowerState/deallocating", "PowerState/stopped"}
 RG_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.()")
@@ -115,6 +118,7 @@ class Config:
     saturation_pct: float
     baseline_days: int
     workers: int
+    deadline_seconds: float
 
 
 @dataclass
@@ -129,6 +133,9 @@ class Report:
     unhealthy: list[dict[str, Any]] = field(default_factory=list)
     series: int = 0
     saturated: int = 0
+    skipped: int = 0
+    tenant_names: dict[str, str] = field(default_factory=dict)
+    readable: list[str] = field(default_factory=list)
     calls: int = 0
 
 
@@ -178,7 +185,7 @@ def az(tools_home: str, args: list[str]) -> subprocess.CompletedProcess[str]:
             ["bash", str(AZURE_CLI), "--tools-home", tools_home, *args, "--only-show-errors"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CollectorError(f"AZ_FAILED: {exc}") from exc
@@ -200,18 +207,24 @@ def access_token(tools_home: str, resource: str, tenant: str | None) -> str:
     return token
 
 
-def known_tenants(tools_home: str) -> set[str]:
-    result = az(tools_home, ["account", "list", "--all", "--query", "[].tenantId", "-o", "json"])
+def known_tenants(tools_home: str) -> dict[str, str]:
+    query = "[].{t:tenantId,n:tenantDisplayName,d:tenantDefaultDomain}"
+    result = az(tools_home, ["account", "list", "--all", "--query", query, "-o", "json"])
     try:
-        values = json.loads(result.stdout or "[]") if result.returncode == 0 else []
+        rows = json.loads(result.stdout or "[]") if result.returncode == 0 else []
     except ValueError:
-        return set()
-    return {str(v).lower() for v in values if isinstance(v, str) and is_uuid(v)}
+        return {}
+    return {
+        str(r["t"]).lower(): str(r.get("n") or r.get("d") or "")
+        for r in rows
+        if isinstance(r, dict) and isinstance(r.get("t"), str) and is_uuid(r["t"])
+    }
 
 
 class Http:
-    def __init__(self, report: Report) -> None:
+    def __init__(self, report: Report, deadline: float) -> None:
         self.report = report
+        self.deadline = deadline
         self.lock = threading.Lock()
 
     def call(self, method: str, url: str, token: str, body: Any = None) -> Any:
@@ -224,7 +237,9 @@ class Http:
             headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=90) as response:
+            remaining = self.deadline + 15 - time.monotonic()
+            timeout = max(3.0, min(HTTP_TIMEOUT, remaining))
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read() or b"null")
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode(errors="replace")
@@ -256,8 +271,12 @@ class Tenant:
 class Azure:
     def __init__(self, cfg: Config, report: Report) -> None:
         self.cfg = cfg
-        self.http = Http(report)
+        self.deadline = time.monotonic() + cfg.deadline_seconds
+        self.http = Http(report, self.deadline)
         self.arm = cfg.arm.rstrip("/")
+
+    def past_deadline(self) -> bool:
+        return time.monotonic() > self.deadline
 
     def paged(self, url: str, token: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -268,11 +287,16 @@ class Azure:
             next_url = page.get("nextLink")
         return rows
 
-    def tenants(self) -> list[str]:
+    def tenants(self) -> dict[str, str]:
         token = access_token(self.cfg.tools_home, self.arm, None)
         rows = self.paged(f"{self.arm}/tenants?api-version={ARM_LIST_API}", token)
-        found = {str(t["tenantId"]).lower() for t in rows if t.get("tenantId")}
-        return sorted(found | known_tenants(self.cfg.tools_home))
+        names = {
+            str(t["tenantId"]).lower(): str(t.get("displayName") or "")
+            for t in rows
+            if t.get("tenantId")
+        }
+        local = known_tenants(self.cfg.tools_home)
+        return {t: names.get(t) or local.get(t, "") for t in sorted(set(names) | set(local))}
 
     def open_tenant(self, tenant: str) -> Tenant:
         arm_token = access_token(self.cfg.tools_home, self.arm, tenant)
@@ -458,6 +482,10 @@ def fetch_chunk(
     azure: Azure, tenant: Tenant, subscription: str, region: str, chunk: list[dict[str, Any]],
     split: str | None, names: list[str], start: datetime, end: datetime, report: Report,
 ) -> dict[str, list[dict[str, Any]]]:
+    if azure.past_deadline():
+        with azure.http.lock:
+            report.skipped += 1
+        return {}
     filter_expr = f"{split} eq '*'" if split else None
     ids = [vm["id"] for vm in chunk]
     attempts = [names] + ([[n] for n in names] if len(names) > 1 else [])
@@ -567,6 +595,9 @@ def evaluate_series(
         return
     level = statistics.median(current)
     baseline = None
+    if check.uses_baseline and azure.past_deadline():
+        report.gaps.append(f"{vm['name']} {name} {label}: baseline skipped at deadline")
+        return
     if check.uses_baseline:
         baseline = baseline_of(azure, cfg, tenant, vm, name, split, label, now, report)
         if baseline is not None and level <= cfg.latency_ratio * baseline:
@@ -591,6 +622,64 @@ def evaluate_series(
     })
 
 
+def tenant_label(report: Report, tenant_id: str) -> str:
+    name = report.tenant_names.get(tenant_id)
+    return f"{tenant_id} ({name})" if name else tenant_id
+
+
+def unhealthy_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
+    for row in rows:
+        key = (
+            str(row.get("subscriptionId")),
+            str(row.get("location")),
+            str(row.get("availabilityState")),
+            str(row.get("title") or row.get("reasonType") or ""),
+        )
+        groups[key].append(str(row.get("name")))
+    ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    return [
+        {"subscription": sub, "location": loc, "state": state, "reason": reason,
+         "count": len(names), "examples": names[:3]}
+        for (sub, loc, state, reason), names in ordered[:20]
+    ]
+
+
+def compact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: compact(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [compact(v) for v in value]
+    return value
+
+
+def short_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "rule": finding["rule"],
+        "severity": finding["severity"],
+        "episode": finding["episode"],
+        "observed": finding["observed"],
+    }
+    resource = finding.get("resource")
+    if resource:
+        out["episode"] = hashlib.sha1(finding["episode"].encode()).hexdigest()[:12]
+        out["resource"] = {k: resource.get(k) for k in ("id", "name", "computerName", "location")}
+        out["observed"] = {
+            k: v for k, v in finding["observed"].items()
+            if k not in ("windowEnd", "windowMinutes", "baselineDays", "threshold")
+        }
+    return dict(compact(out))
+
+
+def finding_rank(finding: dict[str, Any]) -> tuple[int, int, float]:
+    observed = finding.get("observed") or {}
+    return (
+        0 if finding["severity"] == "critical" else 1,
+        0 if finding["rule"] in ("health-onset", "platform-event", "daily-summary") else 1,
+        -float(observed.get("median") or 0),
+    )
+
+
 def collector_error(exc: CollectorError) -> dict[str, Any]:
     return {
         "rule": "collector-error",
@@ -605,11 +694,12 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     azure = Azure(cfg, report)
     wanted = {sub for sub, _ in cfg.scopes}
     tenants: dict[str, Tenant] = {}
-    for tenant_id in azure.tenants():
+    report.tenant_names = azure.tenants()
+    for tenant_id in report.tenant_names:
         try:
             tenant = azure.open_tenant(tenant_id)
         except CollectorError as exc:
-            report.blind.append(f"tenant {tenant_id}: {exc}")
+            report.blind.append(f"tenant {tenant_label(report, tenant_id)}: {exc}"[:240])
             continue
         if wanted:
             tenant.subscriptions = [s for s in tenant.subscriptions if s in wanted]
@@ -621,6 +711,10 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         detail = "; ".join(report.blind) or "identity sees no enabled subscriptions"
         raise CollectorError(f"NO_COVERAGE: {detail}"[:900])
     report.tenants = len(tenants)
+    report.readable = [
+        f"{tenant_label(report, t.id)}: {len(t.subscriptions)} subscription(s)"
+        for t in tenants.values()
+    ]
     report.subscriptions = sum(len(t.subscriptions) for t in tenants.values())
     vms: dict[str, dict[str, Any]] = {}
     health: list[dict[str, Any]] = []
@@ -637,7 +731,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
             annotations.extend(azure.graph(tenant, ANNOTATION_QUERY.format(minutes=lookback)))
         except CollectorError as exc:
             unreadable += 1
-            report.blind.append(f"tenant {tenant.id} Resource Graph: {exc}")
+            report.blind.append(f"tenant {tenant_label(report, tenant.id)} Resource Graph: {exc}"[:240])
     if unreadable == len(tenants):
         raise CollectorError(f"NO_COVERAGE: {'; '.join(report.blind)}"[:900])
     report.vms = len(vms)
@@ -653,9 +747,9 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
             "episode": f"summary|{now.date().isoformat()}",
             "observed": {
                 "notAvailableCount": len(report.unhealthy),
+                "notAvailableGroups": unhealthy_groups(report.unhealthy),
                 "saturatedWithoutLatency": report.saturated,
-                "notAvailable": report.unhealthy[:300],
-                "blind": report.blind,
+                "readableTenants": report.readable,
             },
         })
 
@@ -680,21 +774,29 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{len(report.blind)} blind; {report.vms} VM(s), {report.running} running, "
         f"{len(report.unhealthy)} not Available, {report.series} disk series, "
         f"{report.saturated} saturated without latency, "
-        f"{len(report.gaps)} gap(s); {report.calls} call(s) in {elapsed:.0f}s"
+        f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
+        f"{report.calls} call(s) in {elapsed:.0f}s"
     )
     if not report.findings:
         return summary
-    body = {
-        "generatedAt": iso(now),
-        "scopes": [
-            f"/subscriptions/{sub}" + (f"/resourceGroups/{rg}" if rg else "")
-            for sub, rg in cfg.scopes
-        ] or "all tenants and subscriptions visible to the signed-in identity",
-        "findings": report.findings,
-        "blind": report.blind,
-        "gaps": report.gaps[:50],
-    }
-    return json.dumps(body, ensure_ascii=False, indent=2) + "\n" + summary
+    findings = [short_finding(f) for f in sorted(report.findings, key=finding_rank)]
+    omitted: list[dict[str, Any]] = []
+    while True:
+        body: dict[str, Any] = {"generatedAt": iso(now), "findings": findings}
+        if omitted:
+            rules = sorted({f["rule"] for f in omitted})
+            body["omitted"] = {
+                "count": len(omitted),
+                "rules": {r: sum(1 for f in omitted if f["rule"] == r) for r in rules},
+            }
+        if report.blind:
+            body["blind"] = [b[:200] for b in report.blind]
+        if report.gaps:
+            body["gaps"] = {"count": len(report.gaps), "first": [g[:160] for g in report.gaps[:3]]}
+        text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        if len(text) <= OUTPUT_BUDGET or len(findings) <= 1:
+            return text + "\n" + summary
+        omitted.insert(0, findings.pop())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -718,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--saturation-pct", type=float, default=90.0)
     parser.add_argument("--baseline-days", type=int, default=7)
     parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--deadline-seconds", type=float, default=100.0)
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -739,6 +842,7 @@ def main(argv: list[str] | None = None) -> int:
         saturation_pct=args.saturation_pct,
         baseline_days=args.baseline_days,
         workers=args.workers,
+        deadline_seconds=args.deadline_seconds,
     )
     code, text = run(cfg)
     print(text)

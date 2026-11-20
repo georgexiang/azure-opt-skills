@@ -22,7 +22,7 @@
 | `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制 | warning |
 | `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
-| `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：列出所有非 Available 的运行中 VM（最多 300 台，附总数）、当前跑满但延迟正常的磁盘序列数，以及看不到的租户或订阅（`blind`，例如需要 MFA 重新登录、Resource Graph 报错、`--scope` 中的订阅不可见）。两者都为空时不发 | warning |
+| `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：`notAvailableCount` 和按订阅、区域、状态、原因分组的 `notAvailableGroups`（每组附 3 台代表 VM）、跑满但延迟正常的磁盘序列数、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。都为空时不发 | warning |
 
 指标窗口截止于当前时间之前 `--metric-lag-minutes`（3）分钟，用来避开数据写入延迟。
 
@@ -30,7 +30,13 @@
 
 刻意忽略的情况：Unknown 状态（不能作为故障证据）；已停止或已释放 VM 的健康状态；Customer Initiated 事件；非运行中 VM 的磁盘规则。VM 未发布的指标，以及样本数不足的序列，只记入 `gaps`，不单独唤醒 Agent。
 
-每条 finding 带有 `episode` 键（VM、规则来源、状态变化或事件、发生时间），同一事件在多次运行中保持不变，用于去重。阈值通过 cron 命令中的参数调整，不要修改脚本。Standard HDD 盘的正常延迟可能超过 20 ms，必要时调高 `--latency-ms`；7 天基线已能抑制大部分此类情况。
+每条 finding 带有简短的 `episode` 键，同一事件在多次运行中保持不变，用于去重。
+
+输出是单行紧凑 JSON，最后一行是摘要，总长控制在约 7,000 字符内，不会被平台截断。发现过多时，按严重程度保留前面的，其余计入 `omitted`（数量和规则分布）。`gaps` 只给数量和前 3 条。
+
+cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`（默认 100）后不再查询剩余的磁盘批次，先输出已有结果，摘要行给出 `disk batch(es) skipped at deadline`。这是本轮磁盘覆盖不全，不是故障，不要为此重跑脚本。
+
+阈值通过 cron 命令中的参数调整，不要修改脚本。VM 数以千计时，轻微的延迟上升每轮都会出现，可以追加 `--latency-ms 50`，只对明显的延迟和"跑满且变慢"唤醒。
 
 ## 启用巡检（每个 Project 一次）
 
@@ -44,25 +50,25 @@
    d=$(mktemp -d) && for f in watch.py azure_cli.sh azure_cli_env.sh; do curl -fsSL --retry 2 -o "$d/$f" "https://raw.githubusercontent.com/georgexiang/azure-opt-skills/<commit>/azure-ops/scripts/$f" || { echo "WATCH_FETCH_FAILED: $f"; exit 1; }; done; python3 "$d/watch.py" --tools-home <tools-home>
    ```
 
-4. 携带 Azure 凭据 handle（在 Project 中通常是共享的 `azure`）运行一次 `<watch-command>`，并在末尾追加 `--summary-hour-utc <当前 UTC 小时> --interval-minutes 60`。这两个参数只用于这次试运行，目的是让输出带上 `blind` 明细。向用户报告摘要行中的租户数、订阅数、`blind`、VM 数和耗时，并逐条说明看不到的租户及原因。
+4. 携带 Azure 凭据 handle（在 Project 中通常是共享的 `azure`）运行一次 `<watch-command>`，并在末尾追加 `--summary-hour-utc <当前 UTC 小时> --interval-minutes 60`。这两个参数只用于这次试运行，目的是让输出带上 `daily-summary`。向用户报告可读租户（`readableTenants`）、看不到的租户及原因（`blind`）、VM 数和耗时。
    - VM 数为 0 时，先解决可见性问题，不要启用。
-   - 耗时超过 240 秒时，先在命令末尾加 `--workers 24` 再试一次；仍然超过的话，把 cron 周期改为 10 分钟，同时追加 `--interval-minutes 10`。
+   - 摘要行出现 `skipped at deadline` 时，先在命令末尾加 `--workers 24` 再试一次；仍然出现的话，把 cron 周期改为 10 分钟，同时追加 `--interval-minutes 10`。
 5. 用 `cron` 工具创建：
    - `title`："Azure IaaS 巡检"
    - `schedule`：`{"everyMs": 300000}`
    - `script`：`{"command": "<watch-command>", "credentials": ["azure"]}`。不要追加 `--scope`，除非用户明确要求缩小范围。
-   - `task`："加载 azure-ops skill，按 references/watch.md 的'每次唤醒的处理流程'处理本次巡检结果。"
+   - `task`："加载 azure-ops skill，按 references/watch.md 的'每次唤醒的处理流程'处理本次巡检结果。"。任务说明**始终只保留这一句**：规则和处理方式都以 skill 为准，不要往任务说明里追加规则、凭据要求或暂停条件。运行中的发现只写进 fire note。
    - 投递目标：不传 destination，默认发回创建 cron 的会话。应在 Project 内专门用于巡检告警的会话中创建；当前会话不是专用会话时，先请用户新建一个专用会话。只有用户明确指定，并且该目标出现在 "Where scheduled tasks post" 列表中时，才设置 `destinationKey`。
 6. cron 在后台使用凭据需要所有者单独授权；试运行报告缺少授权时，发起申请，不要绕过。
 7. 告诉用户：巡检什么、多久一次、发到哪里、固定的 `<commit>`、如何暂停。
 
-升级：管理员 Sync 新版本后，重新执行第 2、3 步，并用 `cron` 的 patch 更新 `script.command` 里的 `<commit>`。旧 cron 会继续使用原来固定的版本，不会自动升级。
+升级：管理员 Sync 新版本后，重新执行第 2、3 步，并用 `cron` 的 patch 更新 `script.command` 里的 `<commit>`，同时把 `task` 恢复为第 5 步的那一句。旧 cron 会继续使用原来固定的版本，不会自动升级。
 
 唤醒原因为 `WATCH_FETCH_FAILED` 时，说明无法从 GitHub 下载脚本，巡检本次没有执行：报告一次，并检查网络出口。`AZ_NOT_FOUND` 表示工具链未就绪：在不带 credentials 的执行中运行错误信息给出的 `--ensure` 命令。
 
 ## 每次唤醒的处理流程
 
-1. **去重与分组**：读取上一次 fire note，跳过已报告过的 `episode`；结束前在 fire note 中记下本次报告的 episode。把剩余 findings 按 订阅/区域/规则 分组，同因的放在同一组。
+1. **去重与分组**：读取上一次 fire note，跳过其中已报告的 `episode`；结束前在 fire note 中只记本轮报告的 episode。不要建 checkpoint 文件，也不要上传 Files。输出带 `omitted` 时，按其中的数量和规则分布汇报，不要为补全而重跑脚本。把要报告的 findings 按订阅、区域、规则分组，同因的放在同一组。
 2. **先发事实**：有 critical（Unavailable 的 `health-onset` 或 `collector-error`）时，先发出 VM、状态、变化时间（UTC 和用户时区），再继续诊断并在同一线程补充。
 3. **顺序诊断，不要并发**：按组逐个诊断，不要为诊断启动 subagent，也不要并行执行带凭据的命令。同一个文件凭据被并发使用时，平台在命令结束写回刷新后的登录时会冲突，把整条命令判为失败（"Credential changed during execution"）。遇到这个错误时，重试一次该命令，不要换用其他凭据。
 4. **只读诊断**（按 `vm-diagnostics.md`、`health-and-lookup.md`、`vm-performance-patterns.md` 执行）：

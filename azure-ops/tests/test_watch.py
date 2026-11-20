@@ -108,7 +108,8 @@ class FakeArm(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         params = dict(urllib.parse.parse_qsl(url.query))
         if url.path == "/tenants":
-            return self.reply(200, {"value": [{"tenantId": t} for t in self.world["tenants"]
+            names = {HOME_TENANT: "Home Org", GUEST_TENANT: "Guest Org"}
+            return self.reply(200, {"value": [{"tenantId": t, "displayName": names.get(t)} for t in self.world["tenants"]
                                               if t != LOCKED_TENANT]})
         if url.path == "/subscriptions":
             tenant = self.token_tenant()
@@ -217,7 +218,7 @@ class WatchTests(unittest.TestCase):
 
     def rules(self, body: dict[str, Any] | None) -> list[tuple[str, str | None]]:
         assert body is not None
-        return sorted((f["rule"], f["resource"]["name"] if f["resource"] else None) for f in body["findings"])
+        return sorted((f["rule"], f["resource"]["name"] if "resource" in f else None) for f in body["findings"])
 
     def report_case(self) -> None:
         self.world["vms"] = [vm(VM_A), vm(VM_B)]
@@ -248,7 +249,7 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(disk["observed"]["series"], "LUN 0")
         self.assertEqual(disk["observed"]["median"], 31.6)
         self.assertEqual(disk["observed"]["baselineMedian"], 4.0)
-        self.assertEqual(disk["resource"]["tenantId"], HOME_TENANT)
+        self.assertEqual(disk["resource"]["id"], VM_A)
         self.assertIn("2 tenant(s), 3 subscription(s), 0 blind; 2 VM(s), 2 running, 2 not Available", summary)
         self.assertEqual(set((self.home / "tools-homes.log").read_text().split()), {str(self.tools)})
 
@@ -306,22 +307,25 @@ class WatchTests(unittest.TestCase):
     def test_daily_summary_lists_every_unhealthy_vm_and_blind_tenant_once(self) -> None:
         self.report_case()
         self.world["tenants"][LOCKED_TENANT] = []
-        (self.home / "known-tenants.json").write_text(json.dumps([HOME_TENANT, LOCKED_TENANT]))
+        (self.home / "known-tenants.json").write_text(json.dumps([{"t": HOME_TENANT}, {"t": LOCKED_TENANT, "n": None, "d": "locked.example"}]))
         (self.home / f"fail-{LOCKED_TENANT}").write_text("")
         code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
         self.assertEqual(code, 1)
         assert body is not None
         summary = next(f for f in body["findings"] if f["rule"] == "daily-summary")
         self.assertEqual(summary["observed"]["notAvailableCount"], 2)
-        self.assertEqual(sorted(v["name"] for v in summary["observed"]["notAvailable"]), ["vm-a", "vm-b"])
-        self.assertIn("AADSTS50076", summary["observed"]["blind"][0])
+        groups = summary["observed"]["notAvailableGroups"]
+        self.assertEqual([(g["state"], g["count"], sorted(g["examples"])) for g in groups], [("Degraded", 2, ["vm-a", "vm-b"])])
+        self.assertEqual(summary["observed"]["readableTenants"], [f"{HOME_TENANT} (Home Org): 2 subscription(s)", f"{GUEST_TENANT} (Guest Org): 1 subscription(s)"])
+        self.assertIn(f"{LOCKED_TENANT} (locked.example): AUTH_REQUIRED", body["blind"][0])
+        self.assertIn("AADSTS50076", body["blind"][0])
         self.assertEqual(summary["episode"], f"summary|{self.now.date().isoformat()}")
         code, body, _, _ = self.watch("--summary-hour-utc", str((self.now.hour + 1) % 24))
         self.assertNotIn("daily-summary", [f["rule"] for f in (body or {"findings": []})["findings"]])
 
     def test_locked_tenant_is_blind_and_reported_once_a_day(self) -> None:
         self.world["tenants"][LOCKED_TENANT] = []
-        (self.home / "known-tenants.json").write_text(json.dumps([HOME_TENANT, LOCKED_TENANT]))
+        (self.home / "known-tenants.json").write_text(json.dumps([{"t": HOME_TENANT}, {"t": LOCKED_TENANT}]))
         (self.home / f"fail-{LOCKED_TENANT}").write_text("")
         code, _, summary, _ = self.watch()
         self.assertEqual(code, 0, summary)
@@ -441,6 +445,31 @@ class WatchTests(unittest.TestCase):
         code, _, summary, _ = self.watch()
         self.assertEqual(code, 0, summary)
         self.assertIn("1 gap(s)", summary)
+
+    def test_output_stays_within_the_wake_budget_and_counts_the_rest(self) -> None:
+        self.world["vms"] = [vm(vm_id(SUB, f"vm-{i:03}")) for i in range(60)]
+        self.world["metrics"] = {
+            f"{vm_id(SUB, f'vm-{i:03}')}|Data Disk Latency|0": {"base": 2.0, "recent": 100.0 + i, "recentMinutes": 12, "hourly": 2.0}
+            for i in range(60)
+        }
+        code, body, summary, result = self.watch()
+        self.assertEqual(code, 1)
+        self.assertLessEqual(len(result.stdout.strip().splitlines()[0]), 7000)
+        assert body is not None
+        shown = len(body["findings"])
+        self.assertEqual(shown + body["omitted"]["count"], 60)
+        self.assertEqual(body["omitted"]["rules"], {"disk-latency": 60 - shown})
+        self.assertEqual(body["findings"][0]["observed"]["median"], 159.0)
+        self.assertIn("60 finding(s)", summary)
+
+    def test_deadline_skips_remaining_disk_batches_but_still_reports(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        self.world["health"] = [health(VM_A, "Unavailable", self.now - timedelta(minutes=3))]
+        code, body, summary, _ = self.watch("--deadline-seconds", "0")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("health-onset", "vm-a")])
+        self.assertIn("2 disk batch(es) skipped at deadline", summary)
+        self.assertIn("0 disk series", summary)
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")
