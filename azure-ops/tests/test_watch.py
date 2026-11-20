@@ -381,6 +381,7 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(self.rules(body), [("disk-saturation", "vm-a")])
         assert body is not None
         self.assertEqual(body["findings"][0]["observed"]["series"], "LUN 1")
+        self.assertEqual(body["findings"][0]["observed"]["latencyMedian"], 30.0)
 
     def test_saturation_without_latency_is_only_counted(self) -> None:
         self.world["vms"] = [vm(VM_A)]
@@ -523,6 +524,23 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(burst["groups"], [{"subscription": SUB, "location": "westeurope", "rule": "disk-latency", "count": 25}])
         self.assertEqual([w["name"] for w in burst["worst"]], ["vm-024", "vm-023", "vm-022", "vm-021", "vm-020"])
         self.assertIn("2 finding(s)", summary)
+
+    def test_saturated_burst_ranks_worst_disks_by_latency(self) -> None:
+        names = [f"vm-{i:03}" for i in range(25)]
+        self.world["vms"] = [vm(vm_id(SUB, n)) for n in names]
+        self.world["metrics"] = {}
+        for i, n in enumerate(names):
+            vid = vm_id(SUB, n)
+            self.world["metrics"][f"{vid}|Data Disk Bandwidth Consumed Percentage|1"] = {"base": 40.0, "recent": 100.0, "recentMinutes": 12}
+            self.world["metrics"][f"{vid}|Data Disk Latency|1"] = {"base": 30.0 + (i * 7) % 25}
+        code, body, _, _ = self.watch()
+        self.assertEqual(code, 1)
+        assert body is not None
+        burst = next(f for f in body["findings"] if f["rule"] == "disk-burst")["observed"]
+        self.assertEqual(burst["count"], 25)
+        worst = burst["worst"]
+        self.assertEqual([w["latencyMs"] for w in worst], [54.0, 53.0, 52.0, 51.0, 50.0])
+        self.assertTrue(all(w["consumedPct"] == 100.0 and w["series"] == "LUN 1" for w in worst))
 
     def test_few_disk_onsets_stay_individual(self) -> None:
         self.slow_disks(3)

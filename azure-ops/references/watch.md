@@ -20,8 +20,8 @@
 | `health-onset` | Resource Graph `HealthResources` 中的 availability status | VM 变为 Degraded 或 Unavailable：上一个状态（`previousAvailabilityState`）与当前状态不同，且变化发生在 `interval + --health-lag-minutes`（默认 5 + 10 分钟）之内。Degraded → Unavailable 也算。记录只是刷新、上一个状态相同的不算 | Unavailable 为 critical，Degraded 为 warning |
 | `platform-event` | Resource Graph 中的 resource annotations | 非 Customer Initiated 的事件，开始于 `interval + health lag` 之内，如 Live Migration Failed、加速网络异常 | warning |
 | `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制 | warning |
-| `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
-| `disk-burst` | 采集器自身 | 一轮里 `disk-latency` 与 `disk-saturation` 合计超过 `--disk-burst`（默认 20）时，合并为这一条：总数、按订阅/区域/规则的分组计数（前 10 组）、中位数最高的 5 块盘。大批磁盘同时变慢通常是批处理负载或共同依赖，不逐块报告 | warning |
+| `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**，该延迟记在 `latencyMedian`。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
+| `disk-burst` | 采集器自身 | 一轮里 `disk-latency` 与 `disk-saturation` 合计超过 `--disk-burst`（默认 20）时，合并为这一条：总数、按订阅/区域/规则的分组计数（前 10 组）、延迟最高的 5 块盘（`latencyMs`，饱和类附 `consumedPct`）。大批磁盘同时变慢通常是批处理负载或共同依赖，不逐块报告 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
 | `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：`notAvailableCount` 和按订阅、区域、状态、原因分组的 `notAvailableGroups`（每组附 3 台代表 VM）、跑满但延迟正常的磁盘序列数、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。都为空时不发 | warning |
 
@@ -73,7 +73,7 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 
 1. **去重与分组**：读取上一次 fire note，跳过其中已报告的 `episode`；结束前在 fire note 中只记本轮报告的 episode。不要建 checkpoint 文件，也不要上传 Files。输出带 `omitted` 时，按其中的数量和规则分布汇报，不要为补全而重跑脚本。把要报告的 findings 按订阅、区域、规则分组，同因的放在同一组。
 2. **先发事实**：有 critical（Unavailable 的 `health-onset` 或 `collector-error`）时，先发出 VM、状态、变化时间（UTC 和用户时区），再继续诊断并在同一线程补充。
-3. **顺序诊断，不要并发**：按组逐个诊断，不要为诊断启动 subagent，也不要并行执行带凭据的命令。同一个文件凭据被并发使用时，平台在命令结束写回刷新后的登录时会冲突，把整条命令判为失败（"Credential changed during execution"）。遇到这个错误时，重试一次该命令，不要换用其他凭据。 只对 `health-onset`、`platform-event` 做第 4 步的深度诊断；磁盘类（`disk-latency`、`disk-saturation`、`disk-burst`）不逐台诊断，直接按订阅、区域汇总数量，列出最严重的至多 5 块盘（VM、计算机名、LUN、中位数与基线），一条消息发完。用户追问某块盘时再展开。
+3. **顺序诊断，不要并发**：按组逐个诊断，不要为诊断启动 subagent，也不要并行执行带凭据的命令。同一个文件凭据被并发使用时，平台在命令结束写回刷新后的登录时会冲突，把整条命令判为失败（"Credential changed during execution"）。遇到这个错误时，重试一次该命令，不要换用其他凭据。 只对 `health-onset`、`platform-event` 做第 4 步的深度诊断；磁盘类（`disk-latency`、`disk-saturation`、`disk-burst`）不逐台诊断，直接按订阅、区域汇总数量，**按延迟从高到低**列出最严重的至多 5 块盘，表格列为：VM（计算机名）、LUN（数据盘插槽号，OS 盘标为 OS）、延迟中位数（ms）与 7 天基线、IOPS/带宽使用率（饱和类才有）。延迟取 `disk-latency` 的 `median`、`disk-saturation` 的 `latencyMedian`、`disk-burst` 的 `worst[].latencyMs`；不要按使用率或超阈值样本数排序，跑满的盘使用率都是 100%，排不出先后。一条消息发完，用户追问某块盘时再展开。
 4. **只读诊断**（按 `vm-diagnostics.md`、`health-and-lookup.md`、`vm-performance-patterns.md` 执行）：
    - 先确认当前状态：重新读取 VM 当前的 Resource Health；如果已恢复为 Available，说明该事件已恢复。需要说明持续了多久时，用 Resource Health 历史（`availabilityStatuses` 列表）确定真实开始时间，不要用 Resource Graph 的 `occurredTime`。
    - 关联分析：同资源组或同区域本次有 finding 的其他 VM、该区域的 Service Health、最近 24 小时的 Activity Log 变更。多台 VM 同时降级，更可能是共同依赖的问题，而不是各自宿主机的问题。

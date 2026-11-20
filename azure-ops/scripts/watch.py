@@ -574,7 +574,8 @@ def check_disks(
                     v for n, pts in metrics.items() if checks[n] is LATENCY
                     for v in window_values(pts, end, cfg.window)
                 ]
-                slow = bool(latency) and statistics.median(latency) > cfg.latency_ms
+                latency_level = statistics.median(latency) if latency else None
+                slow = latency_level is not None and latency_level > cfg.latency_ms
                 for name, points in metrics.items():
                     check = checks[name]
                     limit = float(getattr(cfg, check.threshold))
@@ -582,9 +583,14 @@ def check_disks(
                         if sustained(window_values(points, end, cfg.window), limit, cfg.sustain):
                             report.saturated += 1
                         continue
+                    extra = (
+                        {"latencyMedian": round(latency_level, 2)}
+                        if check is SATURATION and latency_level is not None
+                        else {}
+                    )
                     evaluate_series(
                         azure, cfg, tenant, now, end, vm, name, split, label, points, check,
-                        limit, report,
+                        limit, report, extra,
                     )
 
 
@@ -592,6 +598,7 @@ def evaluate_series(
     azure: Azure, cfg: Config, tenant: Tenant, now: datetime, end: datetime,
     vm: dict[str, Any], name: str, split: str | None, label: str,
     points: dict[datetime, float], check: Check, limit: float, report: Report,
+    extra: dict[str, Any],
 ) -> None:
     current = window_values(points, end, cfg.window)
     if len(current) < cfg.sustain:
@@ -626,6 +633,7 @@ def evaluate_series(
             "max": round(max(current), 2),
             "baselineMedian": None if baseline is None else round(baseline, 2),
             "baselineDays": cfg.baseline_days if check.uses_baseline else None,
+            **extra,
         },
     })
 
@@ -682,6 +690,13 @@ def short_finding(finding: dict[str, Any]) -> dict[str, Any]:
 DISK_RULES = ("disk-latency", "disk-saturation")
 
 
+def disk_latency(finding: dict[str, Any]) -> float:
+    observed = finding.get("observed") or {}
+    if finding.get("rule") == "disk-latency":
+        return float(observed.get("median") or 0)
+    return float(observed.get("latencyMedian") or 0)
+
+
 def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
     disks = [f for f in report.findings if f["rule"] in DISK_RULES]
     if len(disks) <= cfg.disk_burst:
@@ -691,7 +706,7 @@ def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
     for f in disks:
         r = f["resource"]
         groups[(str(r.get("subscriptionId")), str(r.get("location")), f["rule"])] += 1
-    worst = sorted(disks, key=lambda f: -float(f["observed"].get("median") or 0))[:5]
+    worst = sorted(disks, key=lambda f: -disk_latency(f))[:5]
     report.findings.append({
         "rule": "disk-burst",
         "severity": "warning",
@@ -710,8 +725,11 @@ def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
                     "rule": f["rule"],
                     "series": f["observed"].get("series"),
                     "metric": f["observed"].get("metric"),
-                    "median": f["observed"].get("median"),
+                    "latencyMs": disk_latency(f),
                     "baselineMedian": f["observed"].get("baselineMedian"),
+                    "consumedPct": (
+                        f["observed"].get("median") if f["rule"] == "disk-saturation" else None
+                    ),
                 }
                 for f in worst
             ],
@@ -720,11 +738,10 @@ def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
 
 
 def finding_rank(finding: dict[str, Any]) -> tuple[int, int, float]:
-    observed = finding.get("observed") or {}
     return (
         0 if finding["severity"] == "critical" else 1,
         0 if finding["rule"] in ("health-onset", "platform-event", "daily-summary", "disk-burst") else 1,
-        -float(observed.get("median") or 0),
+        -disk_latency(finding),
     )
 
 
