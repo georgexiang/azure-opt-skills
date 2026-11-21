@@ -81,13 +81,14 @@ class FakeArm(BaseHTTPRequestHandler):
     def tenant_of(self, sub: str) -> str:
         return next(t for t, subs in self.world["tenants"].items() if sub in subs)
 
-    def series(self, resource: str, names: list[str], luns: list[str], start: datetime,
-               end: datetime, hourly: bool, dim: str = "lun") -> list[dict[str, Any]]:
+    def series(self, resource: str, names: list[str], luns: list[Any], start: datetime,
+               end: datetime, hourly: bool, dim: Any = "lun", step: timedelta | None = None) -> list[dict[str, Any]]:
         value = []
         for name in names:
             series = []
             for lun in luns:
-                spec = self.world["metrics"].get(f"{resource}|{name}|{lun}", {})
+                label = "/".join(lun) if isinstance(lun, tuple) else lun
+                spec = self.world["metrics"].get(f"{resource}|{name}|{label}", {})
                 base = spec.get("base", 1.0)
                 points, moment, index = [], end, 0
                 while moment > start:
@@ -98,10 +99,14 @@ class FakeArm(BaseHTTPRequestHandler):
                         v = spec.get("hourly", base)
                     else:
                         v = spec.get("recent", base) if index < spec.get("recentMinutes", 0) else base
-                    points.append({"timeStamp": iso(moment), "average": v, "total": v})
-                    moment -= timedelta(hours=1) if hourly else timedelta(minutes=1)
+                    points.append({"timeStamp": iso(moment), "average": v, "total": v, "maximum": v})
+                    moment -= step or (timedelta(hours=1) if hourly else timedelta(minutes=1))
                     index += 1
-                meta = [{"name": {"value": dim}, "value": lun}] if lun else []
+                if isinstance(lun, tuple):
+                    meta = [{"name": {"value": d}, "value": x} for d, x in zip(dim, lun)]
+                    lun = "/".join(lun)
+                else:
+                    meta = [{"name": {"value": dim}, "value": lun}] if lun else []
                 series.append({"metadatavalues": meta, "data": list(reversed(points))})
             value.append({"name": {"value": name}, "timeseries": series})
         return value
@@ -131,8 +136,13 @@ class FakeArm(BaseHTTPRequestHandler):
             return self.reply(401, {"error": {"message": "wrong tenant token"}})
         start, end = (datetime.fromisoformat(t.replace("Z", "+00:00")) for t in params["timespan"].split("/"))
         flt = params.get("$filter")
-        luns = [flt.split("'")[1]] if flt else [""]
-        self.reply(200, {"value": self.series(resource, params["metricnames"].split(","), luns, start, end, True)})
+        dims, luns = split_dims(flt)
+        if flt and "'*'" not in flt:
+            luns = [flt.split("'")[1]]
+        step = timedelta(minutes=1) if params.get("interval") == "PT1M" else None
+        self.world.setdefault("hourly", []).append((resource, params["metricnames"], params["interval"]))
+        self.reply(200, {"value": self.series(resource, params["metricnames"].split(","), luns, start, end,
+                                              step is None, dims, step)})
 
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
@@ -168,19 +178,36 @@ class FakeArm(BaseHTTPRequestHandler):
             return self.reply(400, {"error": {"message": "Failed to find metric configuration"}})
         start = datetime.fromisoformat(params["starttime"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(params["endtime"].replace("Z", "+00:00"))
-        dim = "ConnectionState" if params["metricnamespace"] == "microsoft.network/natgateways" else "lun"
-        if not params.get("filter"):
-            luns = [""]
-        elif dim == "ConnectionState":
-            luns = ["Attempted", "Failed"]
-        else:
-            luns = ["0", "1"]
+        dim, luns = split_dims(params.get("filter"))
+        step = timedelta(minutes=5) if params["interval"] == "PT5M" else None
         self.world.setdefault("batches", []).append((region, sub, len(body["resourceids"])))
+        self.world.setdefault("namespaces", []).append(params["metricnamespace"])
+        self.world.setdefault("batch_intervals", []).append(params["interval"])
         values = [
-            {"resourceid": rid, "value": self.series(rid.lower(), names, luns, start, end, False, dim)}
+            {"resourceid": rid, "value": self.series(rid.lower(), names, luns, start, end, False, dim, step)}
             for rid in body["resourceids"]
         ]
         self.reply(200, {"values": values})
+
+
+DIM_VALUES = {
+    "lun": ["0", "1"], "connectionstate": ["Attempted", "Failed"], "peeringtype": ["Private", "Microsoft"],
+    "peer": ["Primary", "Secondary"], "roleinstance": ["IN_0", "IN_1"],
+    "backendsettingspool": ["pool-a", "pool-b"], "httpstatusgroup": ["2xx", "5xx"],
+}
+
+
+def split_dims(flt: str | None) -> tuple[Any, list[Any]]:
+    if not flt:
+        return "lun", [""]
+    dims = [part.split(" eq ")[0].strip() for part in flt.split(" and ")]
+    values = [DIM_VALUES[d.lower()] for d in dims]
+    if len(dims) == 1:
+        return ("lun" if dims[0] == "LUN" else dims[0]), values[0]
+    combos: list[Any] = [()]
+    for options in values:
+        combos = [c + (o,) for c in combos for o in options]
+    return dims, combos
 
 
 def vm(vid: str, power: str = "PowerState/running", location: str = "westeurope") -> dict[str, Any]:
@@ -781,6 +808,114 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(observed["network"], {"loadBalancer": 1, "expressRouteCircuit": 1, "expressRouteGateway": 1})
         self.assertEqual(sorted(g["kind"] for g in observed["notAvailableGroups"]), ["loadBalancer", "virtualMachine"])
         self.assertEqual([e["trackingId"] for e in observed["expressRouteServiceHealth"]], ["TRK-1"])
+
+    def links(self, circuit: str, metric: str = "BgpAvailability", primary: float = 100.0,
+              secondary: float = 100.0, minutes: int = 12) -> None:
+        for peer, value in (("Primary", primary), ("Secondary", secondary)):
+            for name in ("BgpAvailability", "ArpAvailability"):
+                recent = value if name == metric else 100.0
+                self.world["metrics"][f"{circuit}|{name}|Private/{peer}"] = {
+                    "base": 100.0, "recent": recent, "recentMinutes": minutes,
+                }
+
+    def test_one_expressroute_side_down_is_counted_in_shadow_without_waking(self) -> None:
+        er = self.circuit("er-a")
+        self.links(er, primary=40.0)
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("1 ER circuit(s) and 0 ER gateway(s) (er: bgp 1 (worst 40.0))", summary)
+        self.assertIn("microsoft.network/expressroutecircuits", self.world["namespaces"])
+
+    def test_expressroute_alerts_split_one_side_from_both_sides(self) -> None:
+        one = self.circuit("er-one")
+        both = self.circuit("er-both")
+        ongoing = self.circuit("er-ongoing")
+        self.links(one, "ArpAvailability", primary=20.0)
+        self.links(both, primary=0.0, secondary=10.0)
+        self.links(ongoing, secondary=0.0, minutes=300)
+        disabled = self.circuit("er-disabled-peering")
+        self.links(disabled)
+        for peer in ("Primary", "Secondary"):
+            self.world["metrics"][f"{disabled}|BgpAvailability|Microsoft/{peer}"] = {
+                "base": 100.0, "recent": 0.0, "recentMinutes": 12,
+            }
+        code, body, _, _ = self.watch("--er-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("er-arp", "er-one"), ("er-bgp", "er-both")])
+        assert body is not None
+        found = {f["resource"]["name"]: f for f in body["findings"]}
+        self.assertEqual(found["er-one"]["severity"], "warning")
+        self.assertEqual(found["er-one"]["observed"]["downPeers"], ["Primary"])
+        self.assertEqual(found["er-both"]["severity"], "critical")
+        self.assertEqual(found["er-both"]["observed"]["downPeers"], ["Primary", "Secondary"])
+
+    def test_one_side_down_during_planned_maintenance_is_only_annotated(self) -> None:
+        one = self.circuit("er-one")
+        both = self.circuit("er-both")
+        self.links(one, primary=20.0)
+        self.links(both, primary=0.0, secondary=0.0)
+        self.maintenance()
+        code, body, summary, _ = self.watch("--er-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("er-bgp", "er-both")])
+        assert body is not None
+        self.assertEqual(body["findings"][0]["observed"]["serviceHealth"][0]["trackingId"], "TRK-1")
+        self.assertIn("maintenance 1 (worst 20.0)", summary)
+
+    def test_unprovisioned_circuits_and_disabled_peerings_are_not_read(self) -> None:
+        self.net("expressroutecircuits", "er-new", providerState="NotProvisioned", circuitState="Enabled",
+                 peerings=[{"properties": {"peeringType": "AzurePrivatePeering", "state": "Enabled"}}])
+        self.net("expressroutecircuits", "er-off", providerState="Provisioned", circuitState="Enabled",
+                 peerings=[{"properties": {"peeringType": "AzurePrivatePeering", "state": "Disabled"}}])
+        code, _, summary, _ = self.watch("--er-alerts")
+        self.assertEqual(code, 0, summary)
+        self.assertNotIn("microsoft.network/expressroutecircuits", self.world.get("namespaces", []))
+
+    def test_expressroute_gateway_routes_and_cpu(self) -> None:
+        lost = self.net("virtualnetworkgateways", "ergw-lost", sku="ErGw1AZ")
+        drop = self.net("virtualnetworkgateways", "ergw-drop", sku="ErGw1AZ")
+        busy = self.net("virtualnetworkgateways", "ergw-busy", sku="ErGw1AZ")
+        steady = self.net("virtualnetworkgateways", "ergw-steady", sku="ErGw1AZ")
+        routes = "ExpressRouteGatewayCountOfRoutesLearnedFromPeer"
+        cpu = "ExpressRouteGatewayCpuUtilization"
+        self.world["metrics"] = {
+            f"{lost}|{routes}|": {"base": 100.0, "recent": 0.0, "recentMinutes": 2},
+            f"{drop}|{routes}|": {"base": 100.0, "recent": 30.0, "recentMinutes": 2, "hourly": 100.0},
+            f"{busy}|{routes}|": {"base": 100.0},
+            f"{steady}|{routes}|": {"base": 40.0, "hourly": 100.0},
+            f"{busy}|{cpu}|IN_0": {"base": 20.0, "recent": 95.0, "recentMinutes": 5},
+        }
+        for g in (lost, drop, busy, steady):
+            self.world["metrics"].setdefault(f"{g}|{cpu}|IN_0", {"base": 20.0})
+            self.world["metrics"].setdefault(f"{g}|{cpu}|IN_1", {"base": 20.0})
+        code, body, _, _ = self.watch("--er-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            self.rules(body),
+            [("er-gateway-cpu", "ergw-busy"), ("er-routes", "ergw-drop"), ("er-routes", "ergw-lost")],
+        )
+        assert body is not None
+        found = {f["resource"]["name"]: f for f in body["findings"]}
+        self.assertEqual(found["ergw-lost"]["severity"], "critical")
+        self.assertEqual((found["ergw-drop"]["severity"], found["ergw-drop"]["observed"]["baselineMedian"]),
+                         ("warning", 100.0))
+        self.assertEqual(found["ergw-busy"]["observed"]["instance"], "IN_0")
+        self.assertTrue(all(i == "PT5M" for n, i in zip(self.world["namespaces"], self.world["batch_intervals"])
+                            if n == "microsoft.network/virtualnetworkgateways"))
+
+    def test_daily_summary_lists_circuits_with_sustained_bandwidth(self) -> None:
+        hot = self.circuit("er-hot")
+        spike = self.circuit("er-spike")
+        self.world["metrics"] = {
+            f"{hot}|EgressBandwidthUtilization|": {"base": 30.0, "recent": 85.0, "recentMinutes": 20},
+            f"{spike}|EgressBandwidthUtilization|": {"base": 30.0, "recent": 99.0, "recentMinutes": 3},
+        }
+        code, body, _, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        rows = body["findings"][0]["observed"]["expressRouteBandwidth"]
+        self.assertEqual([(r["name"], r["egressPeakPct"], r["egressLongestMinutesOver"]) for r in rows],
+                         [("er-hot", 85.0, 20)])
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

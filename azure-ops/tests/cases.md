@@ -27,6 +27,7 @@
 | 每日汇总 cron 在 07:30 触发（3 个租户，其中 1 个凭据过期） | `watch`              | 依次运行 3 条 `--summary-only` 命令，合成一条消息；过期租户写"无法读取"及原因，不省略 |
 | 升级时发现巡检 cron 的 schedule 是 `*/10 * * * *` | `watch`              | 改为 `{"everyMs": 600000}` 并核对 `--interval-minutes 10`；停用后修改的，完成后重新启用并确认 |
 | 巡检 cron 唤醒，含 `nat-datapath`（已开启 `--nat-alerts`） | `watch` | 先发数据路径异常事实，再查关联子网 VM 出站症状、公网 IP 与 SNAT 容量、Service Health |
+| 巡检 cron 唤醒，含 `er-bgp` critical（两侧下降，附 `serviceHealth`） | `watch` | 先发线路、peering、下降侧与时间，再看维护事件、ER 网关路由数与近期变更；不建议重置网关 |
 专项用例：
 
 - `B 系列 vm-api-01 是不是 CPU credits 用完了？`：路由到 `vm cpu`，查询 CPU 与 credits；credits 缺失时不推断 burst 状态。

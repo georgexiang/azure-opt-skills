@@ -26,7 +26,13 @@ BATCH_API = "2024-02-01"
 METRICS_RESOURCE = "https://metrics.monitor.azure.com"
 VM_NAMESPACE = "microsoft.compute/virtualmachines"
 NAT_NAMESPACE = "microsoft.network/natgateways"
-NAT_DATAPATH_MIN = 90.0
+ER_NAMESPACE = "microsoft.network/expressroutecircuits"
+ERGW_NAMESPACE = "microsoft.network/virtualnetworkgateways"
+DATAPATH_MIN = 90.0
+ER_CPU_MAX = 80.0
+ER_CPU_MINUTES = 30
+ER_ROUTES_DROP = 0.5
+ER_BANDWIDTH_PCT = 80.0
 NAT_RATIO = 3.0
 NAT_FAILED_FLOOR = 10.0
 NAT_DROPS_FLOOR = 100.0
@@ -178,6 +184,7 @@ class Config:
     deadline_seconds: float
     disk_burst: int
     nat_alerts: bool
+    er_alerts: bool
 
 
 @dataclass
@@ -195,7 +202,8 @@ class Report:
     nats: int = 0
     network: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     er_events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    nat_shadow: dict[str, list[float]] = field(default_factory=dict)
+    shadow: dict[str, list[float]] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
     skipped: int = 0
     tenant_names: dict[str, str] = field(default_factory=dict)
     readable: list[str] = field(default_factory=list)
@@ -402,7 +410,7 @@ class Azure:
     def batch_metrics(
         self, tenant: Tenant, subscription: str, region: str, resources: list[str],
         names: list[str], start: datetime, end: datetime, filter_expr: str | None,
-        namespace: str = VM_NAMESPACE, aggregation: str = "average",
+        namespace: str = VM_NAMESPACE, aggregation: str = "average", interval: str = "PT1M",
     ) -> list[dict[str, Any]]:
         query = {
             "api-version": BATCH_API,
@@ -410,7 +418,7 @@ class Azure:
             "metricnames": ",".join(names),
             "starttime": iso(start),
             "endtime": iso(end),
-            "interval": "PT1M",
+            "interval": interval,
             "aggregation": aggregation,
         }
         if filter_expr:
@@ -432,13 +440,13 @@ class Azure:
 
     def hourly(
         self, tenant: Tenant, resource: str, name: str, start: datetime, end: datetime,
-        filter_expr: str | None, aggregation: str = "Average",
+        filter_expr: str | None, aggregation: str = "Average", interval: str = "PT1H",
     ) -> list[dict[str, Any]]:
         query = {
             "api-version": METRICS_API,
             "metricnames": name,
             "timespan": f"{iso(start)}/{iso(end)}",
-            "interval": "PT1H",
+            "interval": interval,
             "aggregation": aggregation,
         }
         if filter_expr:
@@ -759,81 +767,135 @@ def nat_ref(nat: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def nat_onset(points: dict[datetime, float], end: datetime, cfg: Config, hit: Any) -> bool:
-    current = window_values(points, end, cfg.window)
-    previous = window_values(points, end - cfg.interval, cfg.window)
-    return (
-        sum(1 for v in current if hit(v)) >= cfg.sustain
-        and sum(1 for v in previous if hit(v)) < cfg.sustain
+def held(
+    points: dict[datetime, float], end: datetime, minutes: int, need: int, hit: Any,
+) -> bool:
+    return sum(1 for v in window_values(points, end, minutes) if hit(v)) >= need
+
+
+def onset(
+    points: dict[datetime, float], end: datetime, cfg: Config, hit: Any,
+    minutes: int | None = None, need: int | None = None,
+) -> bool:
+    minutes = minutes or cfg.window
+    need = need or cfg.sustain
+    return held(points, end, minutes, need, hit) and not held(
+        points, end - cfg.interval, minutes, need, hit
     )
 
 
-def nat_baseline(
-    azure: Azure, cfg: Config, tenant: Tenant, nat: dict[str, Any], name: str,
-    filter_expr: str | None, now: datetime, report: Report,
-) -> float | None:
+def dims_of(ts: dict[str, Any]) -> dict[str, str]:
+    return {
+        str((m.get("name") or {}).get("value", "")).lower(): str(m.get("value"))
+        for m in ts.get("metadatavalues") or []
+    }
+
+
+def points_of(ts: dict[str, Any], field_name: str) -> dict[datetime, float]:
+    points = {}
+    for point in ts.get("data") or []:
+        moment = parse_time(str(point.get("timeStamp", "")))
+        if moment is not None and point.get(field_name) is not None:
+            points[moment] = float(point[field_name])
+    return points
+
+
+def hourly_values(
+    azure: Azure, cfg: Config, tenant: Tenant, resource: dict[str, Any], name: str,
+    filter_expr: str | None, aggregation: str, now: datetime, report: Report,
+) -> list[float] | None:
     try:
         metrics = azure.hourly(
-            tenant, nat["id"], name, now - timedelta(days=cfg.baseline_days),
-            now - timedelta(hours=1), filter_expr, "Total",
+            tenant, resource["id"], name, now - timedelta(days=cfg.baseline_days),
+            now - timedelta(hours=1), filter_expr, aggregation,
         )
     except CollectorError as exc:
-        report.gaps.append(f"{nat.get('name')} {name} baseline: {exc}")
+        report.gaps.append(f"{resource.get('name')} {name} baseline: {exc}")
         return None
-    hourly = [v for m in metrics for _, pts in series_of(m, None, "total") for v in pts.values()]
-    return statistics.median(hourly) / 60 if hourly else None
+    return [
+        v for m in metrics for _, pts in series_of(m, None, aggregation.lower()) for v in pts.values()
+    ]
 
 
-def nat_finding(
-    cfg: Config, report: Report, rule: str, severity: str, nat: dict[str, Any], end: datetime,
-    observed: dict[str, Any],
+ALERT_FLAGS = {"nat": "nat_alerts", "er": "er_alerts", "agw": "agw_alerts", "lb": "lb_alerts"}
+LOWER_IS_WORSE = {"nat-datapath", "er-bgp", "er-arp", "er-maintenance", "er-routes"}
+
+
+def metric_finding(
+    cfg: Config, report: Report, rule: str, severity: str, resource: dict[str, Any],
+    end: datetime, observed: dict[str, Any], worst: float, key: str = "",
 ) -> None:
-    worst = observed.get("min") if rule == "nat-datapath" else observed.get("max")
-    report.nat_shadow.setdefault(rule, []).append(float(worst or 0))
-    if not cfg.nat_alerts:
+    with report.lock:
+        report.shadow.setdefault(rule, []).append(round(float(worst), 2))
+    if rule == "er-maintenance" or not getattr(cfg, ALERT_FLAGS[rule.split("-")[0]]):
         return
     report.findings.append({
         "rule": rule,
         "severity": severity,
-        "resource": nat_ref(nat),
-        "episode": f"{nat['id']}|{rule}|{iso(end)}",
+        "resource": resource,
+        "episode": "|".join(p for p in (resource["id"], rule, key, iso(end)) if p),
         "observed": observed,
     })
 
 
-def check_nats(
-    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
-    nats: list[dict[str, Any]], report: Report,
-) -> None:
-    end = now - cfg.metric_lag
-    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+def regional(items: list[dict[str, Any]]) -> list[tuple[str, str, str, list[dict[str, Any]]]]:
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    for nat in nats:
-        groups[(str(nat["tenantId"]), str(nat["subscriptionId"]).lower(), str(nat["location"]))].append(nat)
-    for (tenant_id, subscription, region), members in sorted(groups.items()):
-        tenant = tenants[tenant_id]
-        for i in range(0, len(members), BATCH_RESOURCE_CHUNK):
-            chunk = members[i : i + BATCH_RESOURCE_CHUNK]
-            by_id = {n["id"]: n for n in chunk}
-            ids = [n["id"] for n in chunk]
+    for item in items:
+        key = (str(item["tenantId"]), str(item["subscriptionId"]).lower(), str(item["location"]))
+        groups[key].append(item)
+    return [
+        (tenant, sub, region, members[i : i + BATCH_RESOURCE_CHUNK])
+        for (tenant, sub, region), members in sorted(groups.items())
+        for i in range(0, len(members), BATCH_RESOURCE_CHUNK)
+    ]
+
+
+def metric_jobs(
+    azure: Azure, tenants: dict[str, Tenant], items: list[dict[str, Any]], label: str,
+    requests: list[tuple[list[str], str | None, str, str]], namespace: str, start: datetime,
+    end: datetime, evaluate: Any, report: Report,
+) -> list[Any]:
+    def job(tenant_id: str, sub: str, region: str, chunk: list[dict[str, Any]]) -> None:
+        if azure.past_deadline():
+            report.gaps.append(f"{sub}/{region} {label} metrics: skipped at deadline")
+            return
+        by_id = {r["id"]: r for r in chunk}
+        found: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for names, filter_expr, aggregation, interval in requests:
             try:
-                plain = azure.batch_metrics(
-                    tenant, subscription, region, ids, ["DatapathAvailability", "PacketDropCount"],
-                    start, end, None, NAT_NAMESPACE, "average,total",
-                )
-                states = azure.batch_metrics(
-                    tenant, subscription, region, ids, ["SNATConnectionCount"],
-                    start, end, "ConnectionState eq '*'", NAT_NAMESPACE, "total",
+                values = azure.batch_metrics(
+                    tenants[tenant_id], sub, region, list(by_id), names, start, end, filter_expr,
+                    namespace, aggregation, interval,
                 )
             except CollectorError as exc:
-                report.gaps.append(f"{subscription}/{region} NAT metrics: {exc}")
+                report.gaps.append(f"{sub}/{region} {label} metrics: {exc}")
                 continue
-            for entry in plain + states:
-                nat = by_id.get(str(entry.get("resourceid", "")).lower())
-                if nat is None:
-                    continue
-                for metric in entry.get("value") or []:
-                    evaluate_nat(azure, cfg, tenant, now, end, nat, metric, report)
+            for entry in values:
+                found[str(entry.get("resourceid", "")).lower()].extend(entry.get("value") or [])
+        for rid, metrics in found.items():
+            if rid in by_id:
+                evaluate(tenants[tenant_id], by_id[rid], metrics)
+
+    return [
+        (lambda t=t, s=s, r=r, c=c: job(t, s, r, c)) for t, s, r, c in regional(items)
+    ]
+
+
+def nat_jobs(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    nats: list[dict[str, Any]], report: Report,
+) -> list[Any]:
+    end = now - cfg.metric_lag
+    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+
+    def evaluate(tenant: Tenant, nat: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
+        for metric in metrics:
+            evaluate_nat(azure, cfg, tenant, now, end, nat, metric, report)
+
+    return metric_jobs(azure, tenants, nats, "NAT", [
+        (["DatapathAvailability", "PacketDropCount"], None, "average,total", "PT1M"),
+        (["SNATConnectionCount"], "ConnectionState eq '*'", "total", "PT1M"),
+    ], NAT_NAMESPACE, start, end, evaluate, report)
 
 
 def evaluate_nat(
@@ -843,12 +905,12 @@ def evaluate_nat(
     name = str((metric.get("name") or {}).get("value", ""))
     if name == "DatapathAvailability":
         for _, points in series_of(metric, None):
-            if nat_onset(points, end, cfg, lambda v: v < NAT_DATAPATH_MIN):
+            if onset(points, end, cfg, lambda v: v < DATAPATH_MIN):
                 current = window_values(points, end, cfg.window)
-                nat_finding(cfg, report, "nat-datapath", "critical", nat, end, {
+                metric_finding(cfg, report, "nat-datapath", "critical", nat_ref(nat), end, {
                     "metric": name, "median": round(statistics.median(current), 2),
-                    "min": round(min(current), 2), "threshold": NAT_DATAPATH_MIN,
-                })
+                    "min": round(min(current), 2), "threshold": DATAPATH_MIN,
+                }, min(current))
         return
     if name == "PacketDropCount":
         rule, floor, filter_expr, field_name, wanted = (
@@ -865,18 +927,184 @@ def evaluate_nat(
     for label, points in series_of(metric, split, field_name):
         if wanted and label.lower() != wanted.lower():
             continue
-        if not nat_onset(points, end, cfg, lambda v: v > floor):
+        if not onset(points, end, cfg, lambda v: v > floor):
             continue
         current = window_values(points, end, cfg.window)
         level = statistics.median(current)
-        baseline = nat_baseline(azure, cfg, tenant, nat, name, filter_expr, now, report)
+        hourly = hourly_values(azure, cfg, tenant, nat, name, filter_expr, "Total", now, report)
+        baseline = statistics.median(hourly) / 60 if hourly else None
         if baseline is not None and level <= NAT_RATIO * baseline:
             continue
-        nat_finding(cfg, report, rule, "warning", nat, end, {
+        metric_finding(cfg, report, rule, "warning", nat_ref(nat), end, {
             "metric": name, "series": label or None, "median": round(level, 2),
             "max": round(max(current), 2), "floorPerMinute": floor,
             "baselinePerMinute": None if baseline is None else round(baseline, 2),
-        })
+        }, max(current))
+
+
+def net_ref(resource: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": resource["id"],
+        "name": resource.get("name"),
+        "kind": resource.get("kind"),
+        "subscriptionId": resource.get("subscriptionId"),
+        "resourceGroup": resource.get("resourceGroup"),
+        "location": resource.get("location"),
+    }
+
+
+def er_circuits(net: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        r for r in net
+        if r["kind"] == "expressRouteCircuit" and r["enabledPeerings"]
+        and str(r.get("providerState", "")).lower() == "provisioned"
+        and str(r.get("circuitState", "")).lower() == "enabled"
+    ]
+
+
+def er_jobs(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    net: list[dict[str, Any]], report: Report,
+) -> list[Any]:
+    end = now - cfg.metric_lag
+    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+    gw_minutes = max(cfg.window, ER_CPU_MINUTES)
+    gw_start = end - cfg.interval - timedelta(minutes=gw_minutes + 10)
+
+    def links(tenant: Tenant, circuit: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
+        for metric in metrics:
+            evaluate_er_links(cfg, end, circuit, metric, report)
+
+    def gateway(tenant: Tenant, gw: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
+        for metric in metrics:
+            evaluate_er_gateway(azure, cfg, tenant, now, end, gw, metric, report)
+
+    gateways = [r for r in net if r["kind"] == "expressRouteGateway"]
+    return metric_jobs(azure, tenants, er_circuits(net), "ExpressRoute", [
+        (["BgpAvailability", "ArpAvailability"], "PeeringType eq '*' and Peer eq '*'", "average", "PT1M"),
+    ], ER_NAMESPACE, start, end, links, report) + metric_jobs(azure, tenants, gateways, "ER gateway", [
+        (["ExpressRouteGatewayCountOfRoutesLearnedFromPeer"], None, "maximum", "PT5M"),
+        (["ExpressRouteGatewayCpuUtilization"], "roleInstance eq '*'", "average", "PT5M"),
+    ], ERGW_NAMESPACE, gw_start, end, gateway, report)
+
+
+def evaluate_er_links(
+    cfg: Config, end: datetime, circuit: dict[str, Any], metric: dict[str, Any], report: Report,
+) -> None:
+    name = str((metric.get("name") or {}).get("value", ""))
+    rule = {"BgpAvailability": "er-bgp", "ArpAvailability": "er-arp"}.get(name)
+    if rule is None:
+        return
+    sides: dict[str, dict[str, dict[datetime, float]]] = defaultdict(dict)
+    for ts in metric.get("timeseries") or []:
+        dims = dims_of(ts)
+        peering = dims.get("peeringtype", "")
+        if peering and any(peering.lower() in p for p in circuit["enabledPeerings"]):
+            sides[peering][dims.get("peer", "")] = points_of(ts, "average")
+    for peering, peers in sorted(sides.items()):
+        def level(at: datetime) -> list[str]:
+            return sorted(
+                p for p, pts in peers.items()
+                if held(pts, at, cfg.window, cfg.sustain, lambda v: v < DATAPATH_MIN)
+            )
+
+        now_down, before = level(end), level(end - cfg.interval)
+        if len(now_down) <= len(before):
+            continue
+        current = [v for p in now_down for v in window_values(peers[p], end, cfg.window)]
+        both = len(now_down) >= 2
+        maintenance = in_maintenance(report, circuit)
+        observed = {
+            "metric": name, "peeringType": peering, "downPeers": now_down, "peers": len(peers),
+            "min": round(min(current), 2), "threshold": DATAPATH_MIN,
+            "serviceHealth": report.er_events.get(str(circuit.get("subscriptionId")).lower()),
+        }
+        metric_finding(
+            cfg, report, "er-maintenance" if maintenance and not both else rule, "critical" if both else "warning", net_ref(circuit), end,
+            observed, min(current), f"{peering}|{len(now_down)}",
+        )
+
+
+def evaluate_er_gateway(
+    azure: Azure, cfg: Config, tenant: Tenant, now: datetime, end: datetime,
+    gw: dict[str, Any], metric: dict[str, Any], report: Report,
+) -> None:
+    name = str((metric.get("name") or {}).get("value", ""))
+    if name == "ExpressRouteGatewayCpuUtilization":
+        need = ER_CPU_MINUTES // 5 - 1
+        for ts in metric.get("timeseries") or []:
+            points = points_of(ts, "average")
+            if onset(points, end, cfg, lambda v: v >= ER_CPU_MAX, ER_CPU_MINUTES, need):
+                current = window_values(points, end, ER_CPU_MINUTES)
+                instance = dims_of(ts).get("roleinstance", "")
+                metric_finding(cfg, report, "er-gateway-cpu", "warning", net_ref(gw), end, {
+                    "metric": name, "instance": instance or None,
+                    "median": round(statistics.median(current), 2),
+                    "max": round(max(current), 2), "threshold": ER_CPU_MAX,
+                }, max(current), instance)
+        return
+    if name != "ExpressRouteGatewayCountOfRoutesLearnedFromPeer":
+        return
+    for ts in metric.get("timeseries") or []:
+        points = points_of(ts, "maximum")
+        minutes = max(cfg.window, 15)
+        need = minutes // 5 - 1
+        current = window_values(points, end, minutes)
+        if not current:
+            continue
+        if onset(points, end, cfg, lambda v: v <= 0, minutes, need):
+            metric_finding(cfg, report, "er-routes", "critical", net_ref(gw), end, {
+                "metric": name, "current": 0, "before": max(points.values()),
+            }, 0.0)
+            continue
+        level = statistics.median(current)
+        if level <= 0 or level >= max(points.values()):
+            continue
+        hourly = hourly_values(azure, cfg, tenant, gw, name, None, "Maximum", now, report)
+        if not hourly:
+            continue
+        baseline = statistics.median(hourly)
+        limit = ER_ROUTES_DROP * baseline
+        if onset(points, end, cfg, lambda v: v < limit, minutes, need):
+            metric_finding(cfg, report, "er-routes", "warning", net_ref(gw), end, {
+                "metric": name, "median": level, "baselineMedian": baseline,
+                "dropThreshold": ER_ROUTES_DROP,
+            }, level)
+
+
+def er_bandwidth(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    net: list[dict[str, Any]], report: Report,
+) -> list[dict[str, Any]]:
+    out = []
+    for circuit in er_circuits(net):
+        if azure.past_deadline():
+            break
+        try:
+            metrics = azure.hourly(
+                tenants[circuit["tenantId"]], circuit["id"],
+                "IngressBandwidthUtilization,EgressBandwidthUtilization",
+                now - timedelta(days=1), now, None, "Maximum", "PT1M",
+            )
+        except CollectorError as exc:
+            report.gaps.append(f"{circuit.get('name')} bandwidth: {exc}")
+            continue
+        row: dict[str, Any] = {"name": circuit.get("name")}
+        for metric in metrics:
+            name = str((metric.get("name") or {}).get("value", ""))
+            values = [v for _, pts in series_of(metric, None, "maximum") for _, v in sorted(pts.items())]
+            if not values:
+                continue
+            run = longest = 0
+            for v in values:
+                run = run + 1 if v >= ER_BANDWIDTH_PCT else 0
+                longest = max(longest, run)
+            key = "ingress" if name.startswith("Ingress") else "egress"
+            row[f"{key}PeakPct"] = round(max(values), 1)
+            row[f"{key}LongestMinutesOver"] = longest
+        if any(row.get(f"{k}LongestMinutesOver", 0) >= cfg.sustain for k in ("ingress", "egress")):
+            out.append(row)
+    return out
 
 
 def check_disks(
@@ -1190,6 +1418,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 "notAvailableGroups": unhealthy_groups(report.unhealthy),
                 "loopShadow": loop_shadow(report.unhealthy, now),
                 "natGateways": report.nats,
+                "expressRouteBandwidth": er_bandwidth(azure, cfg, now, tenants, net, report) or None,
                 "network": dict(report.network) or None,
                 "expressRouteServiceHealth": [
                     e for e in {
@@ -1201,7 +1430,11 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         })
         return
     check_annotations(cfg, now, vms, annotations, report)
-    check_nats(azure, cfg, now, tenants, nats, report)
+    jobs = nat_jobs(azure, cfg, now, tenants, nats, report) + er_jobs(
+        azure, cfg, now, tenants, net, report
+    )
+    with ThreadPoolExecutor(max_workers=cfg.workers) as pool:
+        list(pool.map(lambda job: job(), jobs))
     check_disks(azure, cfg, now, tenants, vms, report)
     merge_disk_burst(cfg, now, report)
 
@@ -1219,15 +1452,16 @@ def run(cfg: Config) -> tuple[int, str]:
     return (1 if report.findings else 0), render(now, cfg, report, time.monotonic() - started)
 
 
-def nat_shadow_text(report: Report) -> str:
-    if not report.nat_shadow:
-        return "nat: 0"
+def shadow_text(report: Report, family: str) -> str:
+    rules = {r: v for r, v in report.shadow.items() if r.split("-")[0] == family}
+    if not rules:
+        return f"{family}: 0"
     parts = [
-        f"{rule.removeprefix('nat-')} {len(values)} "
-        f"(worst {round(min(values) if rule == 'nat-datapath' else max(values), 1)})"
-        for rule, values in sorted(report.nat_shadow.items())
+        f"{rule.removeprefix(family + '-')} {len(values)} "
+        f"(worst {round(min(values) if rule in LOWER_IS_WORSE else max(values), 1)})"
+        for rule, values in sorted(rules.items())
     ]
-    return "nat: " + ", ".join(parts)
+    return f"{family}: " + ", ".join(parts)
 
 
 def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
@@ -1237,7 +1471,9 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{len(report.blind)} blind; {report.vms} VM(s), {report.running} running, "
         f"{len(report.unhealthy)} not Available, {report.series} disk series, "
         f"{report.saturated} saturated without latency, "
-        f"{report.nats} NAT gateway(s) ({nat_shadow_text(report)}), "
+        f"{report.nats} NAT gateway(s) ({shadow_text(report, 'nat')}), "
+        f"{report.network['expressRouteCircuit']} ER circuit(s) and "
+        f"{report.network['expressRouteGateway']} ER gateway(s) ({shadow_text(report, 'er')}), "
         f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
         f"{report.calls} call(s) in {elapsed:.0f}s"
     )
@@ -1288,6 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--deadline-seconds", type=float, default=100.0)
     parser.add_argument("--disk-burst", type=int, default=20)
     parser.add_argument("--nat-alerts", action="store_true")
+    parser.add_argument("--er-alerts", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -1313,6 +1550,7 @@ def main(argv: list[str] | None = None) -> int:
         deadline_seconds=args.deadline_seconds,
         disk_burst=args.disk_burst,
         nat_alerts=args.nat_alerts,
+        er_alerts=args.er_alerts,
     )
     code, text = run(cfg)
     print(text)

@@ -26,6 +26,10 @@
 | `nat-datapath` | NAT Gateway `DatapathAvailability`（Average） | 15 分钟中 ≥ 10 分钟低于 90（Microsoft 建议的告警线），且上一个 interval 的同长窗口未满足 | critical |
 | `nat-snat-failures` | NAT Gateway `SNATConnectionCount`（Total，`ConnectionState` = Failed） | 15 分钟中 ≥ 10 分钟每分钟失败连接超过 10，刚开始发生，且窗口中位数 > 自身 7 天每分钟基线的 3 倍（无基线时不抑制）。失败连接 > 0 通常意味着 SNAT 端口耗尽或连接数上限 | warning |
 | `nat-packet-drops` | NAT Gateway `PacketDropCount`（Total） | 同上，下限为每分钟 100 个丢包 | warning |
+| `er-bgp` / `er-arp` | ExpressRoute 线路 `BgpAvailability` / `ArpAvailability`（Average，按 `PeeringType`、`Peer` 拆分），只看已启用（Enabled）的 peering，且线路 `serviceProviderProvisioningState = Provisioned`、`circuitProvisioningState = Enabled` | 某 peering 的 Primary 或 Secondary 一侧 15 分钟中 ≥ 10 分钟低于 90，且下降的侧数比上一个 interval 的同长窗口多。`downPeers` 列出下降的一侧或两侧 | 一侧 warning（冗余丢失）；两侧 critical（线路中断） |
+| `er-maintenance` | 同上 + Service Health | 一侧下降发生在该订阅 ExpressRoute 计划维护期间：只计入摘要行，不产生 finding。两侧同时下降仍按 `er-bgp` / `er-arp` critical 报告，并附 `serviceHealth` | — |
+| `er-routes` | ER 网关 `ExpressRouteGatewayCountOfRoutesLearnedFromPeer`（Maximum，PT5M） | 15 分钟（3 个 5 分钟点中 ≥ 2 个）学到的路由数为 0，且上一个 interval 的窗口不是：本地路由被撤回，BGP 虽在但实际不通。否则窗口中位数低于自身 7 天小时最大值中位数的 50%（同样要求刚开始发生） | 降为 0：critical；大幅下降：warning |
+| `er-gateway-cpu` | ER 网关 `ExpressRouteGatewayCpuUtilization`（Average，PT5M，按 `roleInstance` 拆分） | 某实例 30 分钟（6 个点中 ≥ 5 个）≥ 80%，且上一个 interval 的窗口未满足 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
 | `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）、`network`（各类网络资源数量）、`expressRouteServiceHealth`（正在进行的 ExpressRoute 计划维护与服务问题）；看不到的租户在输出的 `blind` 中。`notAvailableGroups` 按资源类型（`kind`：`virtualMachine`、`expressRouteCircuit`、`applicationGateway`、`loadBalancer`）分组。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
@@ -36,6 +40,10 @@
 **网络资源**：每轮用一次 Resource Graph 查询发现 ExpressRoute 线路、`gatewayType = ExpressRoute` 的 VNet 网关、Application Gateway 和负载均衡（受 `--tenant` / `--scope` 限制）。线路、App Gateway、负载均衡的 Resource Health 走上表的 `health-onset` / `health-recovered`，finding 的 `resource.kind` 标明类型。ER 网关不读 Resource Health：`virtualNetworkGateways` 的健康检查项只针对 VPN，对 ER 网关不可依赖，只看指标。
 
 **Service Health**：发现了 ExpressRoute 线路时，再查一次 `ServiceHealthResources`（`Microsoft.ResourceHealth/events`），只取影响服务含 ExpressRoute 的 `PlannedMaintenance`（影响开始 ≤ 现在 ≤ 缓解时间）和 `Status = Active` 的 `ServiceIssue`，按订阅匹配。ExpressRoute 线路的 finding 在 `observed.serviceHealth` 中附带这些事件；计划维护期间，Microsoft 边缘与核心网之间的维护会让 `BgpAvailability` 显示下降，即使客户侧 BGP 正常。Service Health 不是按订阅推送的新兴问题（emerging issues）查不到。
+
+**ExpressRoute 规则默认影子运行**：不加 `--er-alerts` 时，`er-bgp`、`er-arp`、`er-routes`、`er-gateway-cpu` 只计入摘要行（例如 `3 ER circuit(s) and 2 ER gateway(s) (er: bgp 1 (worst 40.0), maintenance 1 (worst 20.0))`），不唤醒；确认阈值后追加 `--er-alerts`。ER 网关指标最小粒度为 5 分钟，因此按 5 分钟点计数。线路与网关可能在不同订阅，凭据需能读到线路所在订阅。每轮请求：每 50 条线路 1 次、每 50 个 ER 网关 2 次（按订阅 + 区域分批），基线只对路由数下降的候选读取。所有网络指标批次与 NAT 一起在磁盘之前并发采集。
+
+`daily-summary` 中的 `expressRouteBandwidth` 列出最近 24 小时入向或出向带宽利用率（`IngressBandwidthUtilization` / `EgressBandwidthUtilization`，每分钟最大值）连续 ≥ 80% 至少 `--sustain-minutes`（10）分钟的线路：峰值与最长连续分钟数。每条线路 1 次调用，只在 `--summary-only` 时读取。
 
 单个租户或订阅看不到时，只计入摘要行的 `blind` 数量和 `daily-summary`，不会每 5 分钟唤醒一次。
 
@@ -93,6 +101,8 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 6. **发布**：在投递会话中，每个事件发一条消息，同因的 finding 合并。**消息标题必须包含租户名**（取 cron 标题中 "·" 之后的部分，例如 "Azure IaaS 巡检 · Contoso-EU — 19:16"）。结论在前，然后是受影响 VM（Azure 名称和计算机名）、带时间的证据、不确定性、建议。长证据放到线程回复。
 
 NAT 发现（开启 `--nat-alerts` 后）：数据路径异常先发事实；诊断查看该 NAT 关联子网中 VM 的出站相关症状、NAT 公网 IP / 前缀数量与 SNAT 端口容量、空闲超时设置、同区域 Service Health。建议增加公网 IP 或前缀扩容 SNAT 容量时，写明前提、费用影响与回退方式。
+
+ExpressRoute 发现（开启 `--er-alerts` 后）：两侧下降先发事实（线路、peering、下降的侧、时间）。诊断看 `serviceHealth` 中的维护或服务问题、同订阅另一条线路是否同时下降、ER 网关学到的路由数、最近 24 小时的线路与网关变更；一侧下降说明冗余丢失但仍可用，建议联系线路运营商或开 Azure Support 工单时写明前提。`er-routes` 降为 0 时，区分本地设备停止通告路由与网关问题，不要直接建议重置网关。
 
 `health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
 
