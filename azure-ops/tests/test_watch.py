@@ -118,6 +118,11 @@ class FakeArm(BaseHTTPRequestHandler):
             rows.append({"subscriptionId": "44444444-4444-4444-8444-444444444444",
                          "tenantId": tenant, "state": "Disabled"})
             return self.reply(200, {"value": rows})
+        if "/providers/Microsoft.ResourceHealth/availabilityStatuses" in url.path:
+            vid = url.path.split("/providers/Microsoft.ResourceHealth")[0].lower()
+            if vid not in self.world.get("history", {}):
+                return self.reply(404, {"error": {"message": "not found"}})
+            return self.reply(200, {"value": self.world["history"][vid]})
         resource = url.path.split("/providers/Microsoft.Insights/metrics")[0].lower()
         if self.tenant_of(resource.split("/")[2]) != self.token_tenant():
             return self.reply(401, {"error": {"message": "wrong tenant token"}})
@@ -173,6 +178,10 @@ def vm(vid: str, power: str = "PowerState/running", location: str = "westeurope"
         "computerName": f"{parts[-1]}.example.internal",
         "powerState": power,
     }
+
+
+def record(state: str | None, at: datetime) -> dict[str, Any]:
+    return {"properties": {"availabilityState": state, "occuredTime": iso(at)}}
 
 
 def health(target: str, state: str, changed: datetime, previous: str = "Available") -> dict[str, Any]:
@@ -547,6 +556,57 @@ class WatchTests(unittest.TestCase):
         code, body, _, _ = self.watch("--disk-burst", "3")
         self.assertEqual(code, 1)
         self.assertEqual(self.rules(body), [("disk-latency", f"vm-00{i}") for i in range(3)])
+
+    def test_recovery_is_reported_once_when_it_happens(self) -> None:
+        self.world["vms"] = [vm(VM_A), vm(VM_B)]
+        self.world["health"] = [
+            health(VM_A, "Available", self.now - timedelta(minutes=3), previous="Degraded"),
+            health(VM_B, "Available", self.now - timedelta(minutes=40), previous="Unavailable"),
+        ]
+        code, body, summary, _ = self.watch()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("health-recovered", "vm-a")])
+        assert body is not None
+        self.assertEqual(body["findings"][0]["severity"], "info")
+        self.assertEqual(body["findings"][0]["observed"]["previousAvailabilityState"], "Degraded")
+        self.assertIn("0 not Available", summary)
+
+    def test_daily_summary_dates_each_degradation_and_counts_loop_candidates(self) -> None:
+        old = vm_id(SUB, "vm-old")
+        new = vm_id(SUB, "vm-new")
+        young = vm_id(SUB, "vm-young")
+        lost = vm_id(SUB, "vm-lost")
+        self.world["vms"] = [vm(old), vm(new), vm(young), vm(lost)]
+        refreshed = self.now - timedelta(minutes=50)
+        self.world["health"] = [
+            health(old, "Degraded", refreshed, previous="Degraded"),
+            health(new, "Unavailable", refreshed, previous="Unavailable"),
+            health(young, "Degraded", refreshed, previous="Degraded"),
+            health(lost, "Degraded", refreshed, previous="Degraded"),
+        ]
+        self.world["history"] = {
+            old: [record(None, self.now - timedelta(days=2)), record("Degraded", self.now - timedelta(days=5)),
+                  record("Degraded", self.now - timedelta(days=10)), record("Available", self.now - timedelta(days=30))],
+            new: [record("Unavailable", self.now - timedelta(hours=2)), record("Available", self.now - timedelta(days=3)),
+                  record("Unavailable", self.now - timedelta(days=20))],
+            young: [record("Degraded", self.now - timedelta(hours=1)), record("Available", self.now - timedelta(days=1))],
+        }
+        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        self.assertEqual(code, 1)
+        assert body is not None
+        summary = next(f for f in body["findings"] if f["rule"] == "daily-summary")["observed"]
+        self.assertEqual(summary["notAvailableCount"], 4)
+        self.assertEqual(summary["newIn24h"], 2)
+        degraded = next(g for g in summary["notAvailableGroups"] if g["state"] == "Degraded")
+        self.assertEqual((degraded["count"], degraded["newIn24h"]), (3, 1))
+        self.assertEqual(degraded["oldestSince"], iso(self.now - timedelta(days=10)))
+        shadow = summary["loopShadow"]
+        self.assertEqual(shadow["wouldTrack"], 3)
+        self.assertEqual(
+            [(b["bucket"], b["count"], b["examples"]) for b in shadow["byAge"]],
+            [("Degraded >7d", 1, ["vm-old"]), ("Degraded unknown", 1, ["vm-lost"]), ("Unavailable <24h", 1, ["vm-new"])],
+        )
+        self.assertIn("gaps", body)
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

@@ -18,12 +18,13 @@
 | 规则 | 数据来源 | 触发条件 | 严重度 |
 | --- | --- | --- | --- |
 | `health-onset` | Resource Graph `HealthResources` 中的 availability status | VM 变为 Degraded 或 Unavailable：上一个状态（`previousAvailabilityState`）与当前状态不同，且变化发生在 `interval + --health-lag-minutes`（默认 5 + 10 分钟）之内。Degraded → Unavailable 也算。记录只是刷新、上一个状态相同的不算 | Unavailable 为 critical，Degraded 为 warning |
+| `health-recovered` | 同上 | 运行中的 VM 从 Degraded / Unavailable 恢复为 Available，变化发生在 `interval + --health-lag-minutes` 之内。Resource Graph 记录约每天刷新一次，刷新后上一个状态被覆盖，因此只能在恢复后的下一轮可靠发现 | info |
 | `platform-event` | Resource Graph 中的 resource annotations | 非 Customer Initiated 的事件，开始于 `interval + health lag` 之内，如 Live Migration Failed、加速网络异常 | warning |
 | `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制 | warning |
 | `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**，该延迟记在 `latencyMedian`。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
 | `disk-burst` | 采集器自身 | 一轮里 `disk-latency` 与 `disk-saturation` 合计超过 `--disk-burst`（默认 20）时，合并为这一条：总数、按订阅/区域/规则的分组计数（前 10 组）、延迟最高的 5 块盘（`latencyMs`，饱和类附 `consumedPct`）。大批磁盘同时变慢通常是批处理负载或共同依赖，不逐块报告 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
-| `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：`notAvailableCount` 和按订阅、区域、状态、原因分组的 `notAvailableGroups`（每组附 3 台代表 VM）、跑满但延迟正常的磁盘序列数、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。都为空时不发 | warning |
+| `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（每组数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、跑满但延迟正常的磁盘序列数、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。都为空时不发 | warning |
 
 指标窗口截止于当前时间之前 `--metric-lag-minutes`（3）分钟，用来避开数据写入延迟。
 
@@ -80,9 +81,11 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
    - 磁盘：与同角色 VM 的同一指标对比，查看同一 LUN 的队列深度和 IOPS/带宽占用，以及磁盘 SKU 上限；区分磁盘级上限、VM 级上限、负载变化和平台问题。
    - 平台事件：迁移失败或宿主机功能降级是宿主机风险信号，不能证明已经发生故障，要明确说明。
 5. **建议**：给出符合证据、影响最小的动作，写明已验证和未验证的前提、预期效果、副作用、执行方、执行后如何验证、何时回退。不得把重启、重新部署、调整规格或区域切换作为无条件结论。不在 Azure 中执行任何变更。
-6. **发布**：在投递会话中，每个事件发一条消息，同因的 finding 合并。结论在前，然后是受影响 VM（Azure 名称和计算机名）、带时间的证据、不确定性、建议。长证据放到线程回复。
+6. **发布**：在投递会话中，每个事件发一条消息，同因的 finding 合并。**消息标题必须包含租户名**（取 cron 标题中 "·" 之后的部分，例如 "Azure IaaS 巡检 · Xiaomi-Europe — 19:16"）。结论在前，然后是受影响 VM（Azure 名称和计算机名）、带时间的证据、不确定性、建议。长证据放到线程回复。
 
-`daily-summary`：发一条当日汇总，非 Available 的 VM 按订阅、区域和原因分组列出数量和代表 VM，不逐台诊断；只对用户追问或新出现的组再展开。`blind` 部分按租户汇总原因：需要 MFA 或重新登录的，请凭据所有者针对该租户执行 `az login --tenant <id>` 并保存登录。不要把这些租户当作健康。
+`health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
+
+`daily-summary`：发一条当日汇总，持续时长用 `oldestSince` 与 `newIn24h`，不要用 Resource Graph 的 `occurredTime`；`loopShadow` 用一行说明"如启用 loop 将跟踪 N 项（按持续时长分布）"，标明为影子统计、尚未启用。非 Available 的 VM 按订阅、区域和原因分组列出数量和代表 VM，不逐台诊断；只对用户追问或新出现的组再展开。`blind` 部分按租户汇总原因：需要 MFA 或重新登录的，请凭据所有者针对该租户执行 `az login --tenant <id>` 并保存登录。不要把这些租户当作健康。
 
 `collector-error` 表示巡检失明。每种错误只报告一次，写明原因（登录过期、缺少授权、Azure 限流）以及谁能修复。共享登录过期时，由凭据所有者重新登录；不要向其他成员索要凭据。
 

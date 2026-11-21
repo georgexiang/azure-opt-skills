@@ -31,6 +31,9 @@ OUTPUT_BUDGET = 7000
 HTTP_TIMEOUT = 30.0
 UNHEALTHY = {"Degraded": "warning", "Unavailable": "critical"}
 STOPPED = {"PowerState/deallocated", "PowerState/deallocating", "PowerState/stopped"}
+HEALTH_HISTORY_API = "2022-10-01"
+LOOP_TRACK_AGE = {"Unavailable": timedelta(minutes=30), "Degraded": timedelta(hours=4)}
+AGE_BUCKETS = ((timedelta(days=1), "<24h"), (timedelta(days=7), "1-7d"))
 RG_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.()")
 HEX = set("0123456789abcdef")
 
@@ -43,6 +46,8 @@ VM_QUERY = """Resources
 HEALTH_QUERY = """HealthResources
 | where type =~ 'microsoft.resourcehealth/availabilitystatuses'
 | where tostring(properties.availabilityState) in ('Degraded', 'Unavailable')
+    or (tostring(properties.availabilityState) == 'Available'
+        and tostring(properties.previousAvailabilityState) in ('Degraded', 'Unavailable'))
 | extend target = tolower(tostring(properties.targetResourceId))
 | where target contains '/providers/microsoft.compute/virtualmachines/'
 | project target,
@@ -361,6 +366,13 @@ class Azure:
         body = self.http.call("POST", url, tenant.metrics_token, {"resourceids": resources}) or {}
         return list(body.get("values") or [])
 
+    def health_history(self, tenant: Tenant, resource: str) -> list[dict[str, Any]]:
+        url = (
+            f"{self.arm}{resource}/providers/Microsoft.ResourceHealth/availabilityStatuses"
+            f"?api-version={HEALTH_HISTORY_API}"
+        )
+        return list((self.http.call("GET", url, tenant.arm_token) or {}).get("value") or [])
+
     def hourly(
         self, tenant: Tenant, resource: str, name: str, start: datetime, end: datetime,
         filter_expr: str | None,
@@ -435,7 +447,12 @@ def check_health(
     for row in rows:
         vm = vms.get(str(row.get("target", "")))
         state = str(row.get("state", ""))
-        if vm is None or state not in UNHEALTHY or vm.get("powerState") in STOPPED:
+        if vm is None or vm.get("powerState") in STOPPED:
+            continue
+        if state == "Available":
+            check_recovery(window, now, vm, row, report)
+            continue
+        if state not in UNHEALTHY:
             continue
         detail = {
             "reasonType": row.get("reasonType") or None,
@@ -459,6 +476,86 @@ def check_health(
                 **detail,
             },
         })
+
+
+def check_recovery(
+    window: timedelta, now: datetime, vm: dict[str, Any], row: dict[str, Any], report: Report,
+) -> None:
+    previous = str(row.get("previous", ""))
+    changed = parse_time(str(row.get("occurred", "")))
+    if previous not in UNHEALTHY or changed is None or not timedelta(0) <= now - changed <= window:
+        return
+    report.findings.append({
+        "rule": "health-recovered",
+        "severity": "info",
+        "resource": vm_ref(vm),
+        "episode": f"{vm['id']}|health|{previous}->Available|{iso(changed)}",
+        "observed": {"previousAvailabilityState": previous, "recoveredAt": iso(changed)},
+    })
+
+
+def unhealthy_since(history: list[dict[str, Any]], state: str) -> datetime | None:
+    since = None
+    for record in history:
+        properties = record.get("properties") or {}
+        current = properties.get("availabilityState")
+        if not current:
+            continue
+        if current != state:
+            break
+        since = parse_time(str(properties.get("occuredTime") or properties.get("occurredTime") or ""))
+    return since
+
+
+def age_bucket(age: timedelta | None) -> str:
+    if age is None:
+        return "unknown"
+    for limit, label in AGE_BUCKETS:
+        if age < limit:
+            return label
+    return ">7d"
+
+
+def add_unhealthy_since(
+    azure: Azure, tenants: dict[str, Tenant], now: datetime, report: Report,
+) -> None:
+    def lookup(row: dict[str, Any]) -> None:
+        if azure.past_deadline():
+            return
+        tenant = tenants.get(str(row.get("tenantId")))
+        if tenant is None:
+            return
+        try:
+            history = azure.health_history(tenant, str(row["id"]))
+        except CollectorError as exc:
+            report.gaps.append(f"{row.get('name')} health history: {exc}")
+            return
+        since = unhealthy_since(history, str(row["availabilityState"]))
+        if since is not None:
+            row["since"] = iso(since)
+            row["ageHours"] = round((now - since).total_seconds() / 3600, 1)
+
+    with ThreadPoolExecutor(max_workers=azure.cfg.workers) as pool:
+        list(pool.map(lookup, report.unhealthy[:300]))
+
+
+def loop_shadow(rows: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+    buckets: dict[str, list[str]] = defaultdict(list)
+    for row in rows:
+        state = str(row.get("availabilityState"))
+        hours = row.get("ageHours")
+        age = None if hours is None else timedelta(hours=float(hours))
+        if age is not None and age < LOOP_TRACK_AGE[state]:
+            continue
+        buckets[f"{state} {age_bucket(age)}"].append(str(row.get("name")))
+    return {
+        "rule": "health: Unavailable >=30m, Degraded >=4h",
+        "wouldTrack": sum(len(v) for v in buckets.values()),
+        "byAge": [
+            {"bucket": k, "count": len(v), "examples": v[:3]}
+            for k, v in sorted(buckets.items())
+        ],
+    }
 
 
 def check_annotations(
@@ -644,7 +741,7 @@ def tenant_label(report: Report, tenant_id: str) -> str:
 
 
 def unhealthy_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         key = (
             str(row.get("subscriptionId")),
@@ -652,13 +749,19 @@ def unhealthy_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             str(row.get("availabilityState")),
             str(row.get("title") or row.get("reasonType") or ""),
         )
-        groups[key].append(str(row.get("name")))
+        groups[key].append(row)
     ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
-    return [
-        {"subscription": sub, "location": loc, "state": state, "reason": reason,
-         "count": len(names), "examples": names[:3]}
-        for (sub, loc, state, reason), names in ordered[:20]
-    ]
+    out = []
+    for (sub, loc, state, reason), members in ordered[:20]:
+        since = sorted(str(m["since"]) for m in members if m.get("since"))
+        out.append({
+            "subscription": sub, "location": loc, "state": state, "reason": reason,
+            "count": len(members),
+            "newIn24h": sum(1 for m in members if m.get("ageHours", 99) < 24),
+            "oldestSince": since[0] if since else None,
+            "examples": [str(m.get("name")) for m in members[:3]],
+        })
+    return out
 
 
 def compact(value: Any) -> Any:
@@ -740,7 +843,7 @@ def merge_disk_burst(cfg: Config, now: datetime, report: Report) -> None:
 def finding_rank(finding: dict[str, Any]) -> tuple[int, int, float]:
     return (
         0 if finding["severity"] == "critical" else 1,
-        0 if finding["rule"] in ("health-onset", "platform-event", "daily-summary", "disk-burst") else 1,
+        0 if finding["rule"] in ("health-onset", "health-recovered", "platform-event", "daily-summary", "disk-burst") else 1,
         -disk_latency(finding),
     )
 
@@ -806,6 +909,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     merge_disk_burst(cfg, now, report)
     due = now.hour == cfg.summary_hour and now.minute < cfg.interval.total_seconds() // 60
     if due and (report.unhealthy or report.blind or report.saturated):
+        add_unhealthy_since(azure, tenants, now, report)
         report.findings.append({
             "rule": "daily-summary",
             "severity": "warning",
@@ -813,7 +917,9 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
             "episode": f"summary|{now.date().isoformat()}",
             "observed": {
                 "notAvailableCount": len(report.unhealthy),
+                "newIn24h": sum(1 for r in report.unhealthy if r.get("ageHours", 99) < 24),
                 "notAvailableGroups": unhealthy_groups(report.unhealthy),
+                "loopShadow": loop_shadow(report.unhealthy, now),
                 "saturatedWithoutLatency": report.saturated,
                 "readableTenants": report.readable,
             },
