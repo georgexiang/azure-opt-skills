@@ -917,6 +917,62 @@ class WatchTests(unittest.TestCase):
         self.assertEqual([(r["name"], r["egressPeakPct"], r["egressLongestMinutesOver"]) for r in rows],
                          [("er-hot", 85.0, 20)])
 
+    def agw(self, name: str, tier: str = "Standard_v2", state: str = "Running") -> str:
+        rid = self.net("applicationgateways", name, sku=tier, tier=tier, operationalState=state)
+        for pool in ("pool-a", "pool-b"):
+            self.world["metrics"].setdefault(f"{rid}|HealthyHostCount|{pool}", {"base": 2.0})
+            self.world["metrics"].setdefault(f"{rid}|UnhealthyHostCount|{pool}", {"base": 0.0})
+        self.world["metrics"].setdefault(f"{rid}|ResponseStatus|2xx", {"base": 100.0, "hourly": 6000.0})
+        self.world["metrics"].setdefault(f"{rid}|ResponseStatus|5xx", {"base": 1.0, "hourly": 60.0})
+        return rid
+
+    def test_app_gateway_pool_loss_is_counted_in_shadow_without_waking(self) -> None:
+        a = self.agw("agw-a")
+        self.world["metrics"][f"{a}|HealthyHostCount|pool-a"] = {"base": 2.0, "recent": 0.0, "recentMinutes": 12}
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("1 app gateway(s) (agw: pool-down 1 (worst 0.0))", summary)
+
+    def test_app_gateway_alerts_report_pool_down_unhealthy_hosts_and_5xx(self) -> None:
+        down = self.agw("agw-down")
+        sick = self.agw("agw-sick")
+        empty = self.agw("agw-empty")
+        errors = self.agw("agw-errors")
+        noisy = self.agw("agw-noisy")
+        self.world["metrics"].update({
+            f"{down}|HealthyHostCount|pool-a": {"base": 2.0, "recent": 0.0, "recentMinutes": 12},
+            f"{down}|UnhealthyHostCount|pool-a": {"base": 0.0, "recent": 2.0, "recentMinutes": 12},
+            f"{sick}|UnhealthyHostCount|pool-b": {"base": 0.0, "recent": 1.0, "recentMinutes": 12},
+            f"{empty}|HealthyHostCount|pool-a": {"base": 0.0},
+            f"{errors}|ResponseStatus|5xx": {"base": 1.0, "recent": 60.0, "recentMinutes": 3, "hourly": 60.0},
+            f"{errors}|BackendResponseStatus|5xx": {"base": 0.0, "recent": 50.0, "recentMinutes": 3},
+            f"{noisy}|ResponseStatus|5xx": {"base": 1.0, "recent": 60.0, "recentMinutes": 3, "hourly": 1800.0},
+        })
+        code, body, _, _ = self.watch("--agw-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            self.rules(body),
+            [("agw-5xx", "agw-errors"), ("agw-pool-down", "agw-down"), ("agw-unhealthy", "agw-sick")],
+        )
+        assert body is not None
+        found = {f["resource"]["name"]: f for f in body["findings"]}
+        self.assertEqual((found["agw-down"]["severity"], found["agw-down"]["observed"]["pool"]), ("critical", "pool-a"))
+        self.assertEqual(found["agw-sick"]["observed"]["pool"], "pool-b")
+        five = found["agw-errors"]["observed"]
+        self.assertEqual((five["requests"], five["errors"], five["backend5xx"], five["baselinePct"]),
+                         (1692, 192, 150, 0.99))
+
+    def test_v1_and_stopped_app_gateways_are_counted_not_read(self) -> None:
+        self.agw("agw-v1", tier="Standard")
+        self.agw("agw-stopped", state="Stopped")
+        code, _, summary, _ = self.watch("--agw-alerts")
+        self.assertEqual(code, 0, summary)
+        self.assertNotIn("microsoft.network/applicationgateways", self.world.get("namespaces", []))
+        code, body, _, _ = self.watch("--summary-only")
+        assert body is not None
+        self.assertEqual(body["findings"][0]["observed"]["network"],
+                         {"applicationGateway": 2, "applicationGatewayV1": 1})
+
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")
         self.assertEqual(code, 2)

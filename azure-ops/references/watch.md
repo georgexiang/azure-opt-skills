@@ -30,6 +30,9 @@
 | `er-maintenance` | 同上 + Service Health | 一侧下降发生在该订阅 ExpressRoute 计划维护期间：只计入摘要行，不产生 finding。两侧同时下降仍按 `er-bgp` / `er-arp` critical 报告，并附 `serviceHealth` | — |
 | `er-routes` | ER 网关 `ExpressRouteGatewayCountOfRoutesLearnedFromPeer`（Maximum，PT5M） | 15 分钟（3 个 5 分钟点中 ≥ 2 个）学到的路由数为 0，且上一个 interval 的窗口不是：本地路由被撤回，BGP 虽在但实际不通。否则窗口中位数低于自身 7 天小时最大值中位数的 50%（同样要求刚开始发生） | 降为 0：critical；大幅下降：warning |
 | `er-gateway-cpu` | ER 网关 `ExpressRouteGatewayCpuUtilization`（Average，PT5M，按 `roleInstance` 拆分） | 某实例 30 分钟（6 个点中 ≥ 5 个）≥ 80%，且上一个 interval 的窗口未满足 | warning |
+| `agw-pool-down` | Application Gateway v2 `HealthyHostCount`（Average，按 `BackendSettingsPool` 拆分） | 某后端池健康主机 15 分钟中 ≥ 10 分钟为 0，上一个 interval 的窗口未满足且其中有健康主机：池全挂。长期为 0 的空池不报 | critical |
+| `agw-unhealthy` | `UnhealthyHostCount`（同上） | 某池不健康主机 15 分钟中 ≥ 10 分钟 > 0，且刚开始发生；同一池已报 `agw-pool-down` 时不再报：冗余减少 | warning |
+| `agw-5xx` | `ResponseStatus`、`BackendResponseStatus`（Total，按 `HttpStatusGroup` 拆分） | 15 分钟窗口请求数 ≥ 100、5xx 占比 ≥ 5%，上一个 interval 的窗口未满足，且占比 > 自身 7 天小时 5xx 占比中位数的 3 倍（无基线时不抑制）。`backend5xx` 是后端返回的 5xx 数，与 `errors` 的差为网关自身产生的 5xx（如 502 连不上后端） | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
 | `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）、`network`（各类网络资源数量）、`expressRouteServiceHealth`（正在进行的 ExpressRoute 计划维护与服务问题）；看不到的租户在输出的 `blind` 中。`notAvailableGroups` 按资源类型（`kind`：`virtualMachine`、`expressRouteCircuit`、`applicationGateway`、`loadBalancer`）分组。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
@@ -42,6 +45,8 @@
 **Service Health**：发现了 ExpressRoute 线路时，再查一次 `ServiceHealthResources`（`Microsoft.ResourceHealth/events`），只取影响服务含 ExpressRoute 的 `PlannedMaintenance`（影响开始 ≤ 现在 ≤ 缓解时间）和 `Status = Active` 的 `ServiceIssue`，按订阅匹配。ExpressRoute 线路的 finding 在 `observed.serviceHealth` 中附带这些事件；计划维护期间，Microsoft 边缘与核心网之间的维护会让 `BgpAvailability` 显示下降，即使客户侧 BGP 正常。Service Health 不是按订阅推送的新兴问题（emerging issues）查不到。
 
 **ExpressRoute 规则默认影子运行**：不加 `--er-alerts` 时，`er-bgp`、`er-arp`、`er-routes`、`er-gateway-cpu` 只计入摘要行（例如 `3 ER circuit(s) and 2 ER gateway(s) (er: bgp 1 (worst 40.0), maintenance 1 (worst 20.0))`），不唤醒；确认阈值后追加 `--er-alerts`。ER 网关指标最小粒度为 5 分钟，因此按 5 分钟点计数。线路与网关可能在不同订阅，凭据需能读到线路所在订阅。每轮请求：每 50 条线路 1 次、每 50 个 ER 网关 2 次（按订阅 + 区域分批），基线只对路由数下降的候选读取。所有网络指标批次与 NAT 一起在磁盘之前并发采集。
+
+**Application Gateway 规则默认影子运行**：不加 `--agw-alerts` 时只计入摘要行（例如 `12 app gateway(s) (agw: pool-down 1 (worst 0.0), unhealthy 3 (worst 2.0))`）；确认后追加 `--agw-alerts`。只读 v2 SKU（`sku.tier` 以 `_v2` 结尾）且未停止的网关；v1 SKU 指标不同且已到退役期，只在 `daily-summary` 的 `network.applicationGatewayV1` 中计数。每轮请求：每 50 个网关 2 次，5xx 基线只对候选读取。
 
 `daily-summary` 中的 `expressRouteBandwidth` 列出最近 24 小时入向或出向带宽利用率（`IngressBandwidthUtilization` / `EgressBandwidthUtilization`，每分钟最大值）连续 ≥ 80% 至少 `--sustain-minutes`（10）分钟的线路：峰值与最长连续分钟数。每条线路 1 次调用，只在 `--summary-only` 时读取。
 
@@ -103,6 +108,8 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 NAT 发现（开启 `--nat-alerts` 后）：数据路径异常先发事实；诊断查看该 NAT 关联子网中 VM 的出站相关症状、NAT 公网 IP / 前缀数量与 SNAT 端口容量、空闲超时设置、同区域 Service Health。建议增加公网 IP 或前缀扩容 SNAT 容量时，写明前提、费用影响与回退方式。
 
 ExpressRoute 发现（开启 `--er-alerts` 后）：两侧下降先发事实（线路、peering、下降的侧、时间）。诊断看 `serviceHealth` 中的维护或服务问题、同订阅另一条线路是否同时下降、ER 网关学到的路由数、最近 24 小时的线路与网关变更；一侧下降说明冗余丢失但仍可用，建议联系线路运营商或开 Azure Support 工单时写明前提。`er-routes` 降为 0 时，区分本地设备停止通告路由与网关问题，不要直接建议重置网关。
+
+Application Gateway 发现（开启 `--agw-alerts` 后）：`agw-pool-down` 先发事实（网关、池、时间）。诊断看该池后端 VM 的健康与平台事件、后端健康探测配置与最近变更、NSG/UDR 变更；`agw-5xx` 用 `errors - backend5xx` 区分网关自身与后端的错误。按池、按网关合并同因发现。
 
 `health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
 

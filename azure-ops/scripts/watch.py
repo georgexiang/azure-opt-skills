@@ -28,7 +28,11 @@ VM_NAMESPACE = "microsoft.compute/virtualmachines"
 NAT_NAMESPACE = "microsoft.network/natgateways"
 ER_NAMESPACE = "microsoft.network/expressroutecircuits"
 ERGW_NAMESPACE = "microsoft.network/virtualnetworkgateways"
+AGW_NAMESPACE = "microsoft.network/applicationgateways"
 DATAPATH_MIN = 90.0
+AGW_5XX_PCT = 5.0
+AGW_MIN_REQUESTS = 100.0
+AGW_RATIO = 3.0
 ER_CPU_MAX = 80.0
 ER_CPU_MINUTES = 30
 ER_ROUTES_DROP = 0.5
@@ -185,6 +189,7 @@ class Config:
     disk_burst: int
     nat_alerts: bool
     er_alerts: bool
+    agw_alerts: bool
 
 
 @dataclass
@@ -818,7 +823,7 @@ def hourly_values(
 
 
 ALERT_FLAGS = {"nat": "nat_alerts", "er": "er_alerts", "agw": "agw_alerts", "lb": "lb_alerts"}
-LOWER_IS_WORSE = {"nat-datapath", "er-bgp", "er-arp", "er-maintenance", "er-routes"}
+LOWER_IS_WORSE = {"nat-datapath", "er-bgp", "er-arp", "er-maintenance", "er-routes", "agw-pool-down"}
 
 
 def metric_finding(
@@ -1070,6 +1075,112 @@ def evaluate_er_gateway(
                 "metric": name, "median": level, "baselineMedian": baseline,
                 "dropThreshold": ER_ROUTES_DROP,
             }, level)
+
+
+def is_agw_v1(agw: dict[str, Any]) -> bool:
+    return not str(agw.get("tier") or agw.get("sku") or "").lower().endswith("_v2")
+
+
+def agw_jobs(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    net: list[dict[str, Any]], report: Report,
+) -> list[Any]:
+    end = now - cfg.metric_lag
+    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+    agws = [
+        r for r in net
+        if r["kind"] == "applicationGateway" and not is_agw_v1(r)
+        and str(r.get("operationalState", "")).lower() != "stopped"
+    ]
+
+    def evaluate(tenant: Tenant, agw: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
+        evaluate_agw(azure, cfg, tenant, now, end, agw, metrics, report)
+
+    return metric_jobs(azure, tenants, agws, "App Gateway", [
+        (["HealthyHostCount", "UnhealthyHostCount"], "BackendSettingsPool eq '*'", "average", "PT1M"),
+        (["ResponseStatus", "BackendResponseStatus"], "HttpStatusGroup eq '*'", "total", "PT1M"),
+    ], AGW_NAMESPACE, start, end, evaluate, report)
+
+
+def evaluate_agw(
+    azure: Azure, cfg: Config, tenant: Tenant, now: datetime, end: datetime,
+    agw: dict[str, Any], metrics: list[dict[str, Any]], report: Report,
+) -> None:
+    hosts: dict[str, dict[str, dict[datetime, float]]] = defaultdict(dict)
+    status: dict[str, dict[str, dict[datetime, float]]] = defaultdict(dict)
+    for metric in metrics:
+        name = str((metric.get("name") or {}).get("value", ""))
+        for ts in metric.get("timeseries") or []:
+            dims = dims_of(ts)
+            if name in ("HealthyHostCount", "UnhealthyHostCount"):
+                hosts[name][dims.get("backendsettingspool", "")] = points_of(ts, "average")
+            elif name in ("ResponseStatus", "BackendResponseStatus"):
+                status[name][dims.get("httpstatusgroup", "")] = points_of(ts, "total")
+    healthy, unhealthy = hosts["HealthyHostCount"], hosts["UnhealthyHostCount"]
+    for pool in sorted(set(healthy) | set(unhealthy)):
+        good = healthy.get(pool, {})
+        bad = unhealthy.get(pool, {})
+        before = window_values(good, end - cfg.interval, cfg.window)
+        if onset(good, end, cfg, lambda v: v < 0.5) and any(v >= 0.5 for v in before):
+            metric_finding(cfg, report, "agw-pool-down", "critical", net_ref(agw), end, {
+                "pool": pool or None, "healthyBefore": round(max(before), 2),
+                "unhealthyMax": round(max(window_values(bad, end, cfg.window) or [0.0]), 2),
+            }, 0.0, pool)
+        elif onset(bad, end, cfg, lambda v: v > 0):
+            current = window_values(bad, end, cfg.window)
+            metric_finding(cfg, report, "agw-unhealthy", "warning", net_ref(agw), end, {
+                "pool": pool or None, "unhealthyMax": round(max(current), 2),
+                "healthyMin": round(min(window_values(good, end, cfg.window) or [0.0]), 2),
+            }, max(current), pool)
+    evaluate_agw_5xx(azure, cfg, tenant, now, end, agw, status, report)
+
+
+def five_xx(groups: dict[str, dict[datetime, float]], at: datetime, minutes: int) -> tuple[float, float]:
+    total = sum(sum(window_values(points, at, minutes)) for points in groups.values())
+    return total, sum(window_values(groups.get("5xx", {}), at, minutes))
+
+
+def evaluate_agw_5xx(
+    azure: Azure, cfg: Config, tenant: Tenant, now: datetime, end: datetime,
+    agw: dict[str, Any], status: dict[str, dict[str, dict[datetime, float]]], report: Report,
+) -> None:
+    groups = status.get("ResponseStatus", {})
+
+    def hit(at: datetime) -> bool:
+        total, errors = five_xx(groups, at, cfg.window)
+        return total >= AGW_MIN_REQUESTS and errors * 100 >= AGW_5XX_PCT * total
+
+    if not hit(end) or hit(end - cfg.interval):
+        return
+    total, errors = five_xx(groups, end, cfg.window)
+    pct = 100 * errors / total
+    try:
+        hourly = azure.hourly(
+            tenant, agw["id"], "ResponseStatus", now - timedelta(days=cfg.baseline_days),
+            now - timedelta(hours=1), "HttpStatusGroup eq '*'", "Total",
+        )
+    except CollectorError as exc:
+        report.gaps.append(f"{agw.get('name')} ResponseStatus baseline: {exc}")
+        hourly = []
+    totals: dict[datetime, float] = defaultdict(float)
+    failed: dict[datetime, float] = defaultdict(float)
+    for metric in hourly:
+        for ts in metric.get("timeseries") or []:
+            group = dims_of(ts).get("httpstatusgroup", "")
+            for moment, value in points_of(ts, "total").items():
+                totals[moment] += value
+                if group == "5xx":
+                    failed[moment] += value
+    shares = [100 * failed[t] / v for t, v in totals.items() if v > 0]
+    baseline = statistics.median(shares) if shares else None
+    if baseline is not None and pct <= AGW_RATIO * baseline:
+        return
+    backend_total, backend_errors = five_xx(status.get("BackendResponseStatus", {}), end, cfg.window)
+    metric_finding(cfg, report, "agw-5xx", "warning", net_ref(agw), end, {
+        "pct": round(pct, 2), "requests": int(total), "errors": int(errors),
+        "backend5xx": int(backend_errors) if backend_total else None,
+        "baselinePct": None if baseline is None else round(baseline, 2),
+    }, pct)
 
 
 def er_bandwidth(
@@ -1401,6 +1512,8 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     report.er_events = active_er_events(events, now)
     for row in net:
         report.network[row["kind"]] += 1
+        if row["kind"] == "applicationGateway" and is_agw_v1(row):
+            report.network["applicationGatewayV1"] += 1
     targets = {**vms, **{r["id"]: r for r in net if r["kind"] != "expressRouteGateway"}}
     check_health(cfg, now, targets, health, report)
     if cfg.summary_only:
@@ -1430,8 +1543,10 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         })
         return
     check_annotations(cfg, now, vms, annotations, report)
-    jobs = nat_jobs(azure, cfg, now, tenants, nats, report) + er_jobs(
-        azure, cfg, now, tenants, net, report
+    jobs = (
+        nat_jobs(azure, cfg, now, tenants, nats, report)
+        + er_jobs(azure, cfg, now, tenants, net, report)
+        + agw_jobs(azure, cfg, now, tenants, net, report)
     )
     with ThreadPoolExecutor(max_workers=cfg.workers) as pool:
         list(pool.map(lambda job: job(), jobs))
@@ -1474,6 +1589,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{report.nats} NAT gateway(s) ({shadow_text(report, 'nat')}), "
         f"{report.network['expressRouteCircuit']} ER circuit(s) and "
         f"{report.network['expressRouteGateway']} ER gateway(s) ({shadow_text(report, 'er')}), "
+        f"{report.network['applicationGateway']} app gateway(s) ({shadow_text(report, 'agw')}), "
         f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
         f"{report.calls} call(s) in {elapsed:.0f}s"
     )
@@ -1525,6 +1641,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disk-burst", type=int, default=20)
     parser.add_argument("--nat-alerts", action="store_true")
     parser.add_argument("--er-alerts", action="store_true")
+    parser.add_argument("--agw-alerts", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -1551,6 +1668,7 @@ def main(argv: list[str] | None = None) -> int:
         disk_burst=args.disk_burst,
         nat_alerts=args.nat_alerts,
         er_alerts=args.er_alerts,
+        agw_alerts=args.agw_alerts,
     )
     code, text = run(cfg)
     print(text)
