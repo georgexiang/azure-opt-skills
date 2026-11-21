@@ -13,7 +13,7 @@
 
 ## 规则
 
-所有时间均为 UTC。`interval` 即 `--interval-minutes`（默认 5），必须与 cron 周期一致。
+所有时间均为 UTC。`interval` 即 `--interval-minutes`（默认 5），必须与 cron 的固定间隔一致。
 
 | 规则 | 数据来源 | 触发条件 | 严重度 |
 | --- | --- | --- | --- |
@@ -56,17 +56,17 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 
 4. 携带 Azure 凭据 handle（在 Project 中通常是共享的 `azure`）运行一次 `<watch-command>`，再追加 `--summary-only` 运行一次（后者输出 `daily-summary`）。向用户报告可读租户（`readableTenants`）、看不到的租户及原因（`blind`）、VM 数和耗时。
    - VM 数为 0 时，先解决可见性问题，不要启用。
-   - 摘要行出现 `skipped at deadline` 时，先在命令末尾加 `--workers 24` 再试一次；仍然出现的话，把 cron 周期改为 10 分钟，同时追加 `--interval-minutes 10`。
+   - 摘要行出现 `skipped at deadline` 时，先在命令末尾加 `--workers 24` 再试一次；仍然出现的话，把 cron 间隔改为 `{"everyMs": 600000}`（10 分钟），同时追加 `--interval-minutes 10`。
 5. 用 `cron` 工具创建：
    - `title`："Azure IaaS 巡检"；多个凭据时为 "Azure IaaS 巡检 · <租户名>"
-   - `schedule`：`{"everyMs": 300000}`
+   - `schedule`：`{"everyMs": 300000}`。**巡检 cron 必须用固定间隔 `{"everyMs": <毫秒>}`，不要用 cron 表达式**（如 `*/10 * * * *`），并且 `--interval-minutes` 必须等于间隔的分钟数。原因：QM 对 cron 表达式这类日历计划，触发后从**计划时间**推算下一次；cron 停用、中断后恢复时，会把错过的每个时间点逐个补跑（每几秒一轮，持续到追上当前时间），补跑的每一轮都扫描"现在"的数据，只增加 Azure 调用和 Agent 唤醒。`everyMs` 从**实际触发时间**推算下一次，恢复后只运行一次，然后按间隔继续。
    - `script`：`{"command": "<watch-command>", "credentials": ["<该凭据 handle>"]}`。只有一个凭据时不加 `--tenant`；多个凭据时加上它负责的 `--tenant`。不要追加 `--scope`，除非用户明确要求缩小范围。
    - `task`："加载 azure-ops skill，按 references/watch.md 的'每次唤醒的处理流程'处理本次巡检结果。"。任务说明**始终只保留这一句**：规则和处理方式都以 skill 为准，不要往任务说明里追加规则、凭据要求或暂停条件。运行中的发现只写进 fire note。
    - 投递目标：不传 destination，默认发回创建 cron 的会话。应在 Project 内专门用于巡检告警的会话中创建；当前会话不是专用会话时，先请用户新建一个专用会话。只有用户明确指定，并且该目标出现在 "Where scheduled tasks post" 列表中时，才设置 `destinationKey`。
 6. cron 在后台使用凭据需要所有者单独授权；试运行报告缺少授权时，发起申请，不要绕过。
 7. 告诉用户：巡检什么、多久一次、发到哪里、固定的 `<commit>`、如何暂停。
 
-升级：管理员 Sync 新版本后，重新执行第 2、3 步，并用 `cron` 的 patch 更新 `script.command` 里的 `<commit>`，同时把 `task` 恢复为第 5 步的那一句。旧 cron 会继续使用原来固定的版本，不会自动升级。
+升级：管理员 Sync 新版本后，重新执行第 2、3 步，并用 `cron` 的 patch 更新 `script.command` 里的 `<commit>`，同时把 `task` 恢复为第 5 步的那一句；发现 `schedule` 是 cron 表达式时，一并改为等效的 `{"everyMs": …}` 并核对 `--interval-minutes`。修改前若先停用 cron，修改完成后必须重新启用并确认，避免巡检停在停用状态。旧 cron 会继续使用原来固定的版本，不会自动升级。
 
 唤醒原因为 `WATCH_FETCH_FAILED` 时，说明无法从 GitHub 下载脚本，巡检本次没有执行：报告一次，并检查网络出口。`AZ_NOT_FOUND` 表示工具链未就绪：在不带 credentials 的执行中运行错误信息给出的 `--ensure` 命令。
 
@@ -99,7 +99,7 @@ Project Digest 每天北京 08:00 生成，收集前 24 小时的项目会话；
 2. 按"启用巡检"第 1–3 步确定 `<tools-home>`、`<commit>`，为每个 Azure 凭据生成命令 `<watch-command> --tenant <该凭据的租户> --summary-only`。
 3. 用 `cron` 工具创建：
    - `title`："Azure IaaS 每日汇总"
-   - `schedule`：`{"cron": "30 7 * * *", "timezone": "Asia/Shanghai"}`
+   - `schedule`：`{"cron": "30 7 * * *", "timezone": "Asia/Shanghai"}`。每日汇总要对齐北京时间 07:30，所以这里保留 cron 表达式（这是唯一的例外）。代价：停用期间每错过一个 07:30，重新启用后就会立即补跑一次，停用 N 天会连续补跑 N 次。每次触发的第 1 步按北京日期去重，所以补跑不会产生重复汇总；停用超过一天时，也可以先把 `schedule` 重新设置一次再启用。
    - **不设 `script`**（一次执行只能带一个文件凭据，多个租户必须分开运行）
    - `task`："加载 azure-ops skill，按 references/watch.md 的'每日汇总 cron'生成并发布今天的汇总。"
    - 不传 destination，发回本会话。
@@ -107,9 +107,9 @@ Project Digest 每天北京 08:00 生成，收集前 24 小时的项目会话；
 
 每次触发：
 
-1. 读取本 cron 的 fire note，取得各租户的命令（凭据 handle、`--tenant`、`<commit>`）；第一次运行时按上面第 2 步生成并写入 fire note。
+1. 读取本 cron 的 fire note，取得各租户的命令（凭据 handle、`--tenant`、`<commit>`）以及最近一次发布汇总的北京日期；第一次运行时按上面第 2 步生成并写入 fire note。如果当前北京日期的汇总已经发布过（例如停用恢复后的补跑），直接 `finish_silently`，不要再发。
 2. **依次**执行每个租户的命令，每次只带该租户的一个凭据，不启动 subagent，不并发。
-3. 用下面的模板合成**一条**消息发布，不发线程回复，不发其他消息。
+3. 用下面的模板合成**一条**消息发布，不发线程回复，不发其他消息；发布后在 fire note 记下本次的北京日期。
 
 模板（Markdown，数值取自各租户的 `daily-summary` 与摘要行）：
 
