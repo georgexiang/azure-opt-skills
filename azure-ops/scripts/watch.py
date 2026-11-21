@@ -56,13 +56,39 @@ VM_QUERY = """Resources
   computerName = tostring(properties.osProfile.computerName),
   powerState = tostring(properties.extended.instanceView.powerState.code)"""
 
+HEALTH_KINDS = {
+    "microsoft.compute/virtualmachines": None,
+    "microsoft.network/expressroutecircuits": "expressRouteCircuit",
+    "microsoft.network/applicationgateways": "applicationGateway",
+    "microsoft.network/loadbalancers": "loadBalancer",
+}
+NET_KINDS = {
+    "microsoft.network/expressroutecircuits": "expressRouteCircuit",
+    "microsoft.network/virtualnetworkgateways": "expressRouteGateway",
+    "microsoft.network/applicationgateways": "applicationGateway",
+    "microsoft.network/loadbalancers": "loadBalancer",
+}
+
+NET_QUERY = """Resources
+| where type in~ ('microsoft.network/expressroutecircuits', 'microsoft.network/virtualnetworkgateways',
+    'microsoft.network/applicationgateways', 'microsoft.network/loadbalancers')
+| where type !~ 'microsoft.network/virtualnetworkgateways' or tostring(properties.gatewayType) =~ 'ExpressRoute'
+| project id = tolower(id), type = tolower(type), name, subscriptionId, resourceGroup, location,
+  sku = coalesce(tostring(sku.name), tostring(properties.sku.name)),
+  tier = coalesce(tostring(properties.sku.tier), tostring(sku.tier)),
+  providerState = tostring(properties.serviceProviderProvisioningState),
+  circuitState = tostring(properties.circuitProvisioningState),
+  peerings = properties.peerings,
+  operationalState = tostring(properties.operationalState),
+  rules = array_length(properties.loadBalancingRules)"""
+
 HEALTH_QUERY = """HealthResources
 | where type =~ 'microsoft.resourcehealth/availabilitystatuses'
 | where tostring(properties.availabilityState) in ('Degraded', 'Unavailable')
     or (tostring(properties.availabilityState) == 'Available'
         and tostring(properties.previousAvailabilityState) in ('Degraded', 'Unavailable'))
 | extend target = tolower(tostring(properties.targetResourceId))
-| where target contains '/providers/microsoft.compute/virtualmachines/'
+| where """ + "\n    or ".join(f"target contains '/providers/{t}/'" for t in HEALTH_KINDS) + """
 | project target,
   state = tostring(properties.availabilityState),
   previous = tostring(properties.previousAvailabilityState),
@@ -70,6 +96,18 @@ HEALTH_QUERY = """HealthResources
   reasonType = tostring(properties.reasonType),
   title = tostring(properties['title']),
   summary = tostring(properties.summary)"""
+
+SERVICE_HEALTH_QUERY = """ServiceHealthResources
+| where type =~ 'microsoft.resourcehealth/events'
+| extend eventType = tostring(properties.EventType), status = tostring(properties.Status)
+| where eventType in ('PlannedMaintenance', 'ServiceIssue')
+| extend impact = tostring(properties.Impact)
+| where impact contains 'ExpressRoute'
+| project subscriptionId, eventType, status,
+  trackingId = tostring(properties.TrackingId),
+  title = tostring(properties.Title),
+  start = tostring(properties.ImpactStartTime),
+  end = tostring(properties.ImpactMitigationTime)"""
 
 ANNOTATION_QUERY = """HealthResources
 | where type =~ 'microsoft.resourcehealth/resourceannotations'
@@ -155,6 +193,8 @@ class Report:
     series: int = 0
     saturated: int = 0
     nats: int = 0
+    network: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    er_events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     nat_shadow: dict[str, list[float]] = field(default_factory=dict)
     skipped: int = 0
     tenant_names: dict[str, str] = field(default_factory=dict)
@@ -447,6 +487,7 @@ def vm_ref(vm: dict[str, Any]) -> dict[str, Any]:
         "subscriptionId": vm.get("subscriptionId"),
         "resourceGroup": vm.get("resourceGroup"),
         "location": vm.get("location"),
+        "kind": vm.get("kind"),
     }
 
 
@@ -459,12 +500,12 @@ def in_scope(cfg: Config, vm: dict[str, Any]) -> bool:
 
 
 def check_health(
-    cfg: Config, now: datetime, vms: dict[str, dict[str, Any]], rows: list[dict[str, Any]],
+    cfg: Config, now: datetime, targets: dict[str, dict[str, Any]], rows: list[dict[str, Any]],
     report: Report,
 ) -> None:
     window = cfg.interval + cfg.health_lag
     for row in rows:
-        vm = vms.get(str(row.get("target", "")))
+        vm = targets.get(str(row.get("target", "")))
         state = str(row.get("state", ""))
         if vm is None or vm.get("powerState") in STOPPED:
             continue
@@ -479,6 +520,8 @@ def check_health(
             "summary": row.get("summary") or None,
         }
         report.unhealthy.append({**vm_ref(vm), "availabilityState": state, **detail})
+        if vm.get("kind") == "expressRouteCircuit":
+            detail["serviceHealth"] = report.er_events.get(str(vm.get("subscriptionId")).lower())
         previous = str(row.get("previous", ""))
         changed = parse_time(str(row.get("occurred", "")))
         if previous == state or changed is None or not timedelta(0) <= now - changed <= window:
@@ -495,6 +538,60 @@ def check_health(
                 **detail,
             },
         })
+
+
+def event_time(text: str) -> datetime | None:
+    value = text.strip()
+    if value.isdigit():
+        number = int(value)
+        if number > 10**16:
+            return datetime(1, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=number // 10)
+        return datetime.fromtimestamp(number / 1000 if number > 10**11 else number, timezone.utc)
+    return parse_time(value)
+
+
+def active_er_events(rows: list[dict[str, Any]], now: datetime) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        kind = str(row.get("eventType", ""))
+        start = event_time(str(row.get("start") or ""))
+        end = event_time(str(row.get("end") or ""))
+        if kind == "ServiceIssue":
+            active = row.get("status") == "Active"
+        elif start is None and end is None:
+            active = row.get("status") == "Active"
+        else:
+            active = (start is None or start <= now) and (end is None or now <= end)
+        if not active:
+            continue
+        event = {
+            "trackingId": row.get("trackingId") or None,
+            "eventType": kind,
+            "title": row.get("title") or None,
+            "start": iso(start) if start else None,
+            "end": iso(end) if end else None,
+        }
+        sub = str(row.get("subscriptionId", "")).lower()
+        if event not in out[sub]:
+            out[sub].append(event)
+    return dict(out)
+
+
+def in_maintenance(report: Report, resource: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        e for e in report.er_events.get(str(resource.get("subscriptionId")).lower(), [])
+        if e["eventType"] == "PlannedMaintenance"
+    ]
+
+
+def net_resource(row: dict[str, Any], tenant_id: str) -> dict[str, Any]:
+    kind = NET_KINDS[str(row.get("type", "")).lower()]
+    enabled = []
+    for peering in row.get("peerings") or []:
+        props = peering.get("properties") or peering if isinstance(peering, dict) else {}
+        if str(props.get("state", "")).lower() == "enabled":
+            enabled.append(str(props.get("peeringType", "")).lower())
+    return {**row, "kind": kind, "tenantId": tenant_id, "enabledPeerings": enabled}
 
 
 def check_recovery(
@@ -897,9 +994,10 @@ def tenant_label(report: Report, tenant_id: str) -> str:
 
 
 def unhealthy_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         key = (
+            str(row.get("kind") or "virtualMachine"),
             str(row.get("subscriptionId")),
             str(row.get("location")),
             str(row.get("availabilityState")),
@@ -908,10 +1006,10 @@ def unhealthy_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups[key].append(row)
     ordered = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     out = []
-    for (sub, loc, state, reason), members in ordered[:20]:
+    for (kind, sub, loc, state, reason), members in ordered[:20]:
         since = sorted(str(m["since"]) for m in members if m.get("since"))
         out.append({
-            "subscription": sub, "location": loc, "state": state, "reason": reason,
+            "kind": kind, "subscription": sub, "location": loc, "state": state, "reason": reason,
             "count": len(members),
             "newIn24h": sum(1 for m in members if m.get("ageHours", 99) < 24),
             "oldestSince": since[0] if since else None,
@@ -938,7 +1036,7 @@ def short_finding(finding: dict[str, Any]) -> dict[str, Any]:
     resource = finding.get("resource")
     if resource:
         out["episode"] = hashlib.sha1(finding["episode"].encode()).hexdigest()[:12]
-        out["resource"] = {k: resource.get(k) for k in ("id", "name", "computerName", "location")}
+        out["resource"] = {k: resource.get(k) for k in ("id", "name", "computerName", "kind", "location")}
         out["observed"] = {
             k: v for k, v in finding["observed"].items()
             if k not in ("windowEnd", "windowMinutes", "baselineDays", "threshold")
@@ -1042,6 +1140,8 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     report.subscriptions = sum(len(t.subscriptions) for t in tenants.values())
     vms: dict[str, dict[str, Any]] = {}
     nats: list[dict[str, Any]] = []
+    net: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     health: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
     lookback = int((cfg.interval + cfg.health_lag).total_seconds() // 60) + 1
@@ -1056,6 +1156,11 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 nat["tenantId"] = tenant.id
                 if in_scope(cfg, nat):
                     nats.append(nat)
+            for row in azure.graph(tenant, NET_QUERY):
+                if in_scope(cfg, row) and str(row.get("type", "")).lower() in NET_KINDS:
+                    net.append(net_resource(row, tenant.id))
+            if any(r["kind"] == "expressRouteCircuit" for r in net):
+                events.extend(azure.graph(tenant, SERVICE_HEALTH_QUERY))
             health.extend(azure.graph(tenant, HEALTH_QUERY))
             annotations.extend(azure.graph(tenant, ANNOTATION_QUERY.format(minutes=lookback)))
         except CollectorError as exc:
@@ -1065,7 +1170,11 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         raise CollectorError(f"NO_COVERAGE: {'; '.join(report.blind)}"[:900])
     report.vms = len(vms)
     report.nats = len(nats)
-    check_health(cfg, now, vms, health, report)
+    report.er_events = active_er_events(events, now)
+    for row in net:
+        report.network[row["kind"]] += 1
+    targets = {**vms, **{r["id"]: r for r in net if r["kind"] != "expressRouteGateway"}}
+    check_health(cfg, now, targets, health, report)
     if cfg.summary_only:
         report.findings = []
         report.running = sum(1 for vm in vms.values() if vm.get("powerState") == "PowerState/running")
@@ -1081,6 +1190,12 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 "notAvailableGroups": unhealthy_groups(report.unhealthy),
                 "loopShadow": loop_shadow(report.unhealthy, now),
                 "natGateways": report.nats,
+                "network": dict(report.network) or None,
+                "expressRouteServiceHealth": [
+                    e for e in {
+                        e["trackingId"]: e for v in report.er_events.values() for e in v
+                    }.values()
+                ] or None,
                 "readableTenants": report.readable,
             },
         })

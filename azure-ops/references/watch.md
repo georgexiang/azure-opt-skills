@@ -17,8 +17,8 @@
 
 | 规则 | 数据来源 | 触发条件 | 严重度 |
 | --- | --- | --- | --- |
-| `health-onset` | Resource Graph `HealthResources` 中的 availability status | VM 变为 Degraded 或 Unavailable：上一个状态（`previousAvailabilityState`）与当前状态不同，且变化发生在 `interval + --health-lag-minutes`（默认 5 + 10 分钟）之内。Degraded → Unavailable 也算。记录只是刷新、上一个状态相同的不算 | Unavailable 为 critical，Degraded 为 warning |
-| `health-recovered` | 同上 | 运行中的 VM 从 Degraded / Unavailable 恢复为 Available，变化发生在 `interval + --health-lag-minutes` 之内。Resource Graph 记录约每天刷新一次，刷新后上一个状态被覆盖，因此只能在恢复后的下一轮可靠发现 | info |
+| `health-onset` | Resource Graph `HealthResources` 中的 availability status | VM、ExpressRoute 线路、Application Gateway、负载均衡变为 Degraded 或 Unavailable：上一个状态（`previousAvailabilityState`）与当前状态不同，且变化发生在 `interval + --health-lag-minutes`（默认 5 + 10 分钟）之内。Degraded → Unavailable 也算。记录只是刷新、上一个状态相同的不算 | Unavailable 为 critical，Degraded 为 warning |
+| `health-recovered` | 同上 | 运行中的 VM 或上述网络资源从 Degraded / Unavailable 恢复为 Available，变化发生在 `interval + --health-lag-minutes` 之内。Resource Graph 记录约每天刷新一次，刷新后上一个状态被覆盖，因此只能在恢复后的下一轮可靠发现 | info |
 | `platform-event` | Resource Graph 中的 resource annotations | 非 Customer Initiated 的事件，开始于 `interval + health lag` 之内，如 Live Migration Failed、加速网络异常 | warning |
 | `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制。同时给出 `daysOverThreshold`（基线 7 天内有小时均值超过 `--latency-ms` 的天数）与 `wouldTrack`（≥ 3 天，loop 影子标记） | warning |
 | `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**，该延迟记在 `latencyMedian`。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
@@ -27,11 +27,15 @@
 | `nat-snat-failures` | NAT Gateway `SNATConnectionCount`（Total，`ConnectionState` = Failed） | 15 分钟中 ≥ 10 分钟每分钟失败连接超过 10，刚开始发生，且窗口中位数 > 自身 7 天每分钟基线的 3 倍（无基线时不抑制）。失败连接 > 0 通常意味着 SNAT 端口耗尽或连接数上限 | warning |
 | `nat-packet-drops` | NAT Gateway `PacketDropCount`（Total） | 同上，下限为每分钟 100 个丢包 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
-| `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
+| `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）、`network`（各类网络资源数量）、`expressRouteServiceHealth`（正在进行的 ExpressRoute 计划维护与服务问题）；看不到的租户在输出的 `blind` 中。`notAvailableGroups` 按资源类型（`kind`：`virtualMachine`、`expressRouteCircuit`、`applicationGateway`、`loadBalancer`）分组。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
 指标窗口截止于当前时间之前 `--metric-lag-minutes`（3）分钟，用来避开数据写入延迟。
 
 **NAT Gateway 规则默认影子运行**：不加 `--nat-alerts` 时，三条 NAT 规则只计算、不产生 finding、不唤醒，结果写在摘要行，例如 `33 NAT gateway(s) (nat: datapath 1 (worst 52.0), snat-failures 2 (worst 140.0))`，可在 cron 运行记录中查看。影子运行一周、确认阈值后，在命令中追加 `--nat-alerts` 开启告警。NAT 资源与 VM 一样受 `--tenant` / `--scope` 限制，并在磁盘之前采集，不受磁盘截止时间影响。`daily-summary` 中的 `natGateways` 为 NAT 数量。
+
+**网络资源**：每轮用一次 Resource Graph 查询发现 ExpressRoute 线路、`gatewayType = ExpressRoute` 的 VNet 网关、Application Gateway 和负载均衡（受 `--tenant` / `--scope` 限制）。线路、App Gateway、负载均衡的 Resource Health 走上表的 `health-onset` / `health-recovered`，finding 的 `resource.kind` 标明类型。ER 网关不读 Resource Health：`virtualNetworkGateways` 的健康检查项只针对 VPN，对 ER 网关不可依赖，只看指标。
+
+**Service Health**：发现了 ExpressRoute 线路时，再查一次 `ServiceHealthResources`（`Microsoft.ResourceHealth/events`），只取影响服务含 ExpressRoute 的 `PlannedMaintenance`（影响开始 ≤ 现在 ≤ 缓解时间）和 `Status = Active` 的 `ServiceIssue`，按订阅匹配。ExpressRoute 线路的 finding 在 `observed.serviceHealth` 中附带这些事件；计划维护期间，Microsoft 边缘与核心网之间的维护会让 `BgpAvailability` 显示下降，即使客户侧 BGP 正常。Service Health 不是按订阅推送的新兴问题（emerging issues）查不到。
 
 单个租户或订阅看不到时，只计入摘要行的 `blind` 数量和 `daily-summary`，不会每 5 分钟唤醒一次。
 

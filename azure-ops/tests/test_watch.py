@@ -145,9 +145,14 @@ class FakeArm(BaseHTTPRequestHandler):
             if tenant in self.world.get("argFail", []):
                 return self.reply(400, {"error": {"message": "bad", "details": [{"code": "InvalidQuery", "message": "parse"}]}})
             query = body["query"]
+            self.world.setdefault("queries", []).append(query)
             subs = set(body["subscriptions"])
-            if "natgateways" in query:
+            if query.startswith("ServiceHealthResources"):
+                rows = [e for e in self.world.get("servicehealth", []) if e["subscriptionId"] in subs]
+            elif "natgateways" in query:
                 rows = [n for n in self.world.get("nats", []) if n["subscriptionId"] in subs]
+            elif "applicationgateways" in query and query.startswith("Resources"):
+                rows = [n for n in self.world.get("net", []) if n["subscriptionId"] in subs]
             elif query.startswith("Resources"):
                 rows = [v for v in self.world["vms"] if v["subscriptionId"] in subs]
             else:
@@ -702,6 +707,80 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(code, 1)
         assert body is not None
         self.assertEqual(body["findings"][0]["observed"]["natGateways"], 2)
+
+    def net(self, kind: str, name: str, **extra: Any) -> str:
+        rid = f"/subscriptions/{SUB}/resourcegroups/{RG}/providers/microsoft.network/{kind}/{name}"
+        self.world.setdefault("net", []).append({
+            "id": rid, "type": f"microsoft.network/{kind}", "name": name, "subscriptionId": SUB,
+            "resourceGroup": RG, "location": "westeurope", **extra,
+        })
+        return rid
+
+    def circuit(self, name: str) -> str:
+        return self.net(
+            "expressroutecircuits", name, sku="Premium_MeteredData", providerState="Provisioned",
+            circuitState="Enabled", peerings=[
+                {"name": "AzurePrivatePeering", "properties": {"peeringType": "AzurePrivatePeering", "state": "Enabled"}},
+                {"name": "MicrosoftPeering", "properties": {"peeringType": "MicrosoftPeering", "state": "Disabled"}},
+            ],
+        )
+
+    def maintenance(self, title: str = "ExpressRoute maintenance", **extra: Any) -> None:
+        self.world.setdefault("servicehealth", []).append({
+            "subscriptionId": SUB, "eventType": "PlannedMaintenance", "status": "Active",
+            "trackingId": "TRK-1", "title": title,
+            "start": iso(self.now - timedelta(hours=1)), "end": iso(self.now + timedelta(hours=3)), **extra,
+        })
+
+    def test_network_resources_get_health_onset_and_circuits_carry_service_health(self) -> None:
+        lb = self.net("loadbalancers", "lb-a", sku="Standard", rules=2)
+        agw = self.net("applicationgateways", "agw-a", sku="Standard_v2", tier="Standard_v2",
+                       operationalState="Running")
+        er = self.circuit("er-a")
+        self.maintenance()
+        self.world["servicehealth"].append({
+            "subscriptionId": SUB, "eventType": "PlannedMaintenance", "status": "Active",
+            "trackingId": "TRK-OLD", "title": "finished", "start": "1700000000000", "end": "1700003600000",
+        })
+        self.world["health"] = [
+            health(lb, "Unavailable", self.now - timedelta(minutes=3)),
+            health(agw, "Degraded", self.now - timedelta(minutes=3)),
+            health(er, "Degraded", self.now - timedelta(minutes=3)),
+        ]
+        code, body, _, _ = self.watch()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("health-onset", "agw-a"), ("health-onset", "er-a"), ("health-onset", "lb-a")])
+        assert body is not None
+        by_name = {f["resource"]["name"]: f for f in body["findings"]}
+        self.assertEqual(by_name["lb-a"]["severity"], "critical")
+        self.assertEqual(by_name["lb-a"]["resource"]["kind"], "loadBalancer")
+        self.assertEqual([e["trackingId"] for e in by_name["er-a"]["observed"]["serviceHealth"]], ["TRK-1"])
+        self.assertNotIn("serviceHealth", by_name["agw-a"]["observed"])
+
+    def test_service_health_is_not_queried_without_circuits(self) -> None:
+        self.net("loadbalancers", "lb-a", sku="Standard", rules=2)
+        self.watch()
+        queries = self.world["queries"]
+        self.assertTrue(any("loadbalancers" in q for q in queries))
+        self.assertFalse(any(q.startswith("ServiceHealthResources") for q in queries))
+
+    def test_daily_summary_groups_unhealthy_by_kind_and_counts_network(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        lb = self.net("loadbalancers", "lb-a", sku="Standard", rules=2)
+        self.circuit("er-a")
+        self.net("virtualnetworkgateways", "ergw-a", sku="ErGw1AZ")
+        self.maintenance()
+        self.world["health"] = [
+            health(VM_A, "Degraded", self.now - timedelta(minutes=3)),
+            health(lb, "Degraded", self.now - timedelta(minutes=3)),
+        ]
+        code, body, _, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        observed = body["findings"][0]["observed"]
+        self.assertEqual(observed["network"], {"loadBalancer": 1, "expressRouteCircuit": 1, "expressRouteGateway": 1})
+        self.assertEqual(sorted(g["kind"] for g in observed["notAvailableGroups"]), ["loadBalancer", "virtualMachine"])
+        self.assertEqual([e["trackingId"] for e in observed["expressRouteServiceHealth"]], ["TRK-1"])
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")
