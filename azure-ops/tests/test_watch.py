@@ -91,7 +91,10 @@ class FakeArm(BaseHTTPRequestHandler):
                 base = spec.get("base", 1.0)
                 points, moment, index = [], end, 0
                 while moment > start:
-                    if hourly:
+                    if hourly and "hourlySeries" in spec:
+                        series_values = spec["hourlySeries"]
+                        v = series_values[-1 - index] if index < len(series_values) else base
+                    elif hourly:
                         v = spec.get("hourly", base)
                     else:
                         v = spec.get("recent", base) if index < spec.get("recentMinutes", 0) else base
@@ -318,7 +321,7 @@ class WatchTests(unittest.TestCase):
         self.world["tenants"][LOCKED_TENANT] = []
         (self.home / "known-tenants.json").write_text(json.dumps([{"t": HOME_TENANT}, {"t": LOCKED_TENANT, "n": None, "d": "locked.example"}]))
         (self.home / f"fail-{LOCKED_TENANT}").write_text("")
-        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        code, body, _, _ = self.watch("--summary-only")
         self.assertEqual(code, 1)
         assert body is not None
         summary = next(f for f in body["findings"] if f["rule"] == "daily-summary")
@@ -329,7 +332,7 @@ class WatchTests(unittest.TestCase):
         self.assertIn(f"{LOCKED_TENANT} (locked.example): AUTH_REQUIRED", body["blind"][0])
         self.assertIn("AADSTS50076", body["blind"][0])
         self.assertEqual(summary["episode"], f"summary|{self.now.date().isoformat()}")
-        code, body, _, _ = self.watch("--summary-hour-utc", str((self.now.hour + 1) % 24))
+        code, body, _, _ = self.watch()
         self.assertNotIn("daily-summary", [f["rule"] for f in (body or {"findings": []})["findings"]])
 
     def test_locked_tenant_is_blind_and_reported_once_a_day(self) -> None:
@@ -339,7 +342,7 @@ class WatchTests(unittest.TestCase):
         code, _, summary, _ = self.watch()
         self.assertEqual(code, 0, summary)
         self.assertIn("2 tenant(s), 3 subscription(s), 1 blind", summary)
-        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        code, body, _, _ = self.watch("--summary-only")
         self.assertEqual(code, 1)
         self.assertEqual(self.rules(body), [("daily-summary", None)])
         assert body is not None
@@ -401,10 +404,6 @@ class WatchTests(unittest.TestCase):
         code, body, summary, _ = self.watch()
         self.assertEqual((code, body), (0, None), summary)
         self.assertIn("1 saturated without latency", summary)
-        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
-        self.assertEqual(code, 1)
-        assert body is not None
-        self.assertEqual(body["findings"][0]["observed"]["saturatedWithoutLatency"], 1)
 
     def test_expired_login_wakes_the_agent_without_calling_azure(self) -> None:
         (self.home / "fail-home").write_text("")
@@ -591,7 +590,7 @@ class WatchTests(unittest.TestCase):
                   record("Unavailable", self.now - timedelta(days=20))],
             young: [record("Degraded", self.now - timedelta(hours=1)), record("Available", self.now - timedelta(days=1))],
         }
-        code, body, _, _ = self.watch("--summary-hour-utc", str(self.now.hour), "--interval-minutes", "60")
+        code, body, _, _ = self.watch("--summary-only")
         self.assertEqual(code, 1)
         assert body is not None
         summary = next(f for f in body["findings"] if f["rule"] == "daily-summary")["observed"]
@@ -607,6 +606,44 @@ class WatchTests(unittest.TestCase):
             [("Degraded >7d", 1, ["vm-old"]), ("Degraded unknown", 1, ["vm-lost"]), ("Unavailable <24h", 1, ["vm-new"])],
         )
         self.assertIn("gaps", body)
+
+    def test_summary_only_skips_detection_and_disks_and_always_reports(self) -> None:
+        self.world["vms"] = [vm(VM_A)]
+        self.world["health"] = [health(VM_A, "Unavailable", self.now - timedelta(minutes=3))]
+        self.world["annotations"] = [{
+            "target": VM_A, "annotation": "LiveMigrationFailed",
+            "occurred": iso(self.now - timedelta(minutes=2)), "context": "Platform Initiated",
+        }]
+        self.world["metrics"] = {
+            f"{VM_A}|Data Disk Latency|0": {"base": 2.0, "recent": 300.0, "recentMinutes": 12, "hourly": 2.0},
+        }
+        code, body, summary, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [("daily-summary", None)])
+        self.assertEqual([c for c in FakeArm.calls if "metrics" in c[1]], [])
+        self.assertIn("1 VM(s), 1 running, 1 not Available", summary)
+        self.world["vms"], self.world["health"], self.world["annotations"] = [vm(VM_A)], [], []
+        code, body, _, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        quiet = body["findings"][0]["observed"]
+        self.assertEqual((quiet["notAvailableCount"], quiet["notAvailableGroups"]), (0, []))
+
+    def test_disk_latency_counts_days_over_threshold_in_the_baseline_week(self) -> None:
+        self.world["vms"] = [vm(VM_A), vm(VM_B)]
+        hours_a = [2.0] * 168
+        for day in (1, 3, 5):
+            hours_a[-(day * 24) - 2] = 80.0
+        self.world["metrics"] = {
+            f"{VM_A}|Data Disk Latency|0": {"base": 2.0, "recent": 300.0, "recentMinutes": 12, "hourlySeries": hours_a},
+            f"{VM_B}|Data Disk Latency|0": {"base": 2.0, "recent": 300.0, "recentMinutes": 12, "hourly": 2.0},
+        }
+        code, body, _, _ = self.watch()
+        self.assertEqual(code, 1)
+        assert body is not None
+        observed = {f["resource"]["name"]: f["observed"] for f in body["findings"]}
+        self.assertEqual((observed["vm-a"]["daysOverThreshold"], observed["vm-a"]["wouldTrack"]), (3, True))
+        self.assertEqual((observed["vm-b"]["daysOverThreshold"], observed["vm-b"]["wouldTrack"]), (0, False))
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

@@ -33,6 +33,7 @@ UNHEALTHY = {"Degraded": "warning", "Unavailable": "critical"}
 STOPPED = {"PowerState/deallocated", "PowerState/deallocating", "PowerState/stopped"}
 HEALTH_HISTORY_API = "2022-10-01"
 LOOP_TRACK_AGE = {"Unavailable": timedelta(minutes=30), "Degraded": timedelta(hours=4)}
+LOOP_TRACK_DISK_DAYS = 3
 AGE_BUCKETS = ((timedelta(days=1), "<24h"), (timedelta(days=7), "1-7d"))
 RG_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.()")
 HEX = set("0123456789abcdef")
@@ -116,7 +117,7 @@ class Config:
     interval: timedelta
     health_lag: timedelta
     metric_lag: timedelta
-    summary_hour: int
+    summary_only: bool
     window: int
     sustain: int
     latency_ms: float
@@ -615,7 +616,7 @@ def fetch_chunk(
 def baseline_of(
     azure: Azure, cfg: Config, tenant: Tenant, vm: dict[str, Any], name: str, split: str | None,
     label: str, now: datetime, report: Report,
-) -> float | None:
+) -> tuple[float | None, int | None]:
     filter_expr = f"{split} eq '{label.split(' ', 1)[1]}'" if split and label else None
     try:
         metrics = azure.hourly(
@@ -624,9 +625,12 @@ def baseline_of(
         )
     except CollectorError as exc:
         report.gaps.append(f"{vm['name']} {name} baseline: {exc}")
-        return None
-    values = [v for m in metrics for _, points in series_of(m, None) for v in points.values()]
-    return statistics.median(values) if values else None
+        return None, None
+    points = [(t, v) for m in metrics for _, series in series_of(m, None) for t, v in series.items()]
+    if not points:
+        return None, None
+    days = len({t.date() for t, v in points if v > cfg.latency_ms})
+    return statistics.median(v for _, v in points), days
 
 
 def check_disks(
@@ -707,11 +711,12 @@ def evaluate_series(
         return
     level = statistics.median(current)
     baseline = None
+    days = None
     if check.uses_baseline and azure.past_deadline():
         report.gaps.append(f"{vm['name']} {name} {label}: baseline skipped at deadline")
         return
     if check.uses_baseline:
-        baseline = baseline_of(azure, cfg, tenant, vm, name, split, label, now, report)
+        baseline, days = baseline_of(azure, cfg, tenant, vm, name, split, label, now, report)
         if baseline is not None and level <= cfg.latency_ratio * baseline:
             return
     report.findings.append({
@@ -730,6 +735,8 @@ def evaluate_series(
             "max": round(max(current), 2),
             "baselineMedian": None if baseline is None else round(baseline, 2),
             "baselineDays": cfg.baseline_days if check.uses_baseline else None,
+            "daysOverThreshold": days,
+            "wouldTrack": None if days is None else days >= LOOP_TRACK_DISK_DAYS,
             **extra,
         },
     })
@@ -904,11 +911,9 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         raise CollectorError(f"NO_COVERAGE: {'; '.join(report.blind)}"[:900])
     report.vms = len(vms)
     check_health(cfg, now, vms, health, report)
-    check_annotations(cfg, now, vms, annotations, report)
-    check_disks(azure, cfg, now, tenants, vms, report)
-    merge_disk_burst(cfg, now, report)
-    due = now.hour == cfg.summary_hour and now.minute < cfg.interval.total_seconds() // 60
-    if due and (report.unhealthy or report.blind or report.saturated):
+    if cfg.summary_only:
+        report.findings = []
+        report.running = sum(1 for vm in vms.values() if vm.get("powerState") == "PowerState/running")
         add_unhealthy_since(azure, tenants, now, report)
         report.findings.append({
             "rule": "daily-summary",
@@ -920,10 +925,13 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 "newIn24h": sum(1 for r in report.unhealthy if r.get("ageHours", 99) < 24),
                 "notAvailableGroups": unhealthy_groups(report.unhealthy),
                 "loopShadow": loop_shadow(report.unhealthy, now),
-                "saturatedWithoutLatency": report.saturated,
                 "readableTenants": report.readable,
             },
         })
+        return
+    check_annotations(cfg, now, vms, annotations, report)
+    check_disks(azure, cfg, now, tenants, vms, report)
+    merge_disk_burst(cfg, now, report)
 
 
 def run(cfg: Config) -> tuple[int, str]:
@@ -985,7 +993,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval-minutes", type=int, default=5)
     parser.add_argument("--health-lag-minutes", type=int, default=10)
     parser.add_argument("--metric-lag-minutes", type=int, default=3)
-    parser.add_argument("--summary-hour-utc", type=int, default=1)
+    parser.add_argument("--summary-only", action="store_true")
     parser.add_argument("--window-minutes", type=int, default=15)
     parser.add_argument("--sustain-minutes", type=int, default=10)
     parser.add_argument("--latency-ms", type=float, default=20.0)
@@ -1009,7 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
         interval=timedelta(minutes=args.interval_minutes),
         health_lag=timedelta(minutes=args.health_lag_minutes),
         metric_lag=timedelta(minutes=args.metric_lag_minutes),
-        summary_hour=args.summary_hour_utc,
+        summary_only=args.summary_only,
         window=args.window_minutes,
         sustain=args.sustain_minutes,
         latency_ms=args.latency_ms,

@@ -20,11 +20,11 @@
 | `health-onset` | Resource Graph `HealthResources` 中的 availability status | VM 变为 Degraded 或 Unavailable：上一个状态（`previousAvailabilityState`）与当前状态不同，且变化发生在 `interval + --health-lag-minutes`（默认 5 + 10 分钟）之内。Degraded → Unavailable 也算。记录只是刷新、上一个状态相同的不算 | Unavailable 为 critical，Degraded 为 warning |
 | `health-recovered` | 同上 | 运行中的 VM 从 Degraded / Unavailable 恢复为 Available，变化发生在 `interval + --health-lag-minutes` 之内。Resource Graph 记录约每天刷新一次，刷新后上一个状态被覆盖，因此只能在恢复后的下一轮可靠发现 | info |
 | `platform-event` | Resource Graph 中的 resource annotations | 非 Customer Initiated 的事件，开始于 `interval + health lag` 之内，如 Live Migration Failed、加速网络异常 | warning |
-| `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制 | warning |
+| `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制。同时给出 `daysOverThreshold`（基线 7 天内有小时均值超过 `--latency-ms` 的天数）与 `wouldTrack`（≥ 3 天，loop 影子标记） | warning |
 | `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**，该延迟记在 `latencyMedian`。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
 | `disk-burst` | 采集器自身 | 一轮里 `disk-latency` 与 `disk-saturation` 合计超过 `--disk-burst`（默认 20）时，合并为这一条：总数、按订阅/区域/规则的分组计数（前 10 组）、延迟最高的 5 块盘（`latencyMs`，饱和类附 `consumedPct`）。大批磁盘同时变慢通常是批处理负载或共同依赖，不逐块报告 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
-| `daily-summary` | 采集器自身 | 每天在 `--summary-hour-utc`（默认 01，即北京时间 09 点）所在的那个 interval 发一次：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（每组数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、跑满但延迟正常的磁盘序列数、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。都为空时不发 | warning |
+| `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
 指标窗口截止于当前时间之前 `--metric-lag-minutes`（3）分钟，用来避开数据写入延迟。
 
@@ -54,7 +54,7 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
    d=$(mktemp -d) && for f in watch.py azure_cli.sh azure_cli_env.sh; do curl -fsSL --retry 2 -o "$d/$f" "https://raw.githubusercontent.com/georgexiang/azure-opt-skills/<commit>/azure-ops/scripts/$f" || { echo "WATCH_FETCH_FAILED: $f"; exit 1; }; done; python3 "$d/watch.py" --tools-home <tools-home>
    ```
 
-4. 携带 Azure 凭据 handle（在 Project 中通常是共享的 `azure`）运行一次 `<watch-command>`，并在末尾追加 `--summary-hour-utc <当前 UTC 小时> --interval-minutes 60`。这两个参数只用于这次试运行，目的是让输出带上 `daily-summary`。向用户报告可读租户（`readableTenants`）、看不到的租户及原因（`blind`）、VM 数和耗时。
+4. 携带 Azure 凭据 handle（在 Project 中通常是共享的 `azure`）运行一次 `<watch-command>`，再追加 `--summary-only` 运行一次（后者输出 `daily-summary`）。向用户报告可读租户（`readableTenants`）、看不到的租户及原因（`blind`）、VM 数和耗时。
    - VM 数为 0 时，先解决可见性问题，不要启用。
    - 摘要行出现 `skipped at deadline` 时，先在命令末尾加 `--workers 24` 再试一次；仍然出现的话，把 cron 周期改为 10 分钟，同时追加 `--interval-minutes 10`。
 5. 用 `cron` 工具创建：
@@ -85,9 +85,53 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
 
 `health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
 
-`daily-summary`：发一条当日汇总，持续时长用 `oldestSince` 与 `newIn24h`，不要用 Resource Graph 的 `occurredTime`；`loopShadow` 用一行说明"如启用 loop 将跟踪 N 项（按持续时长分布）"，标明为影子统计、尚未启用。非 Available 的 VM 按订阅、区域和原因分组列出数量和代表 VM，不逐台诊断；只对用户追问或新出现的组再展开。`blind` 部分按租户汇总原因：需要 MFA 或重新登录的，请凭据所有者针对该租户执行 `az login --tenant <id>` 并保存登录。不要把这些租户当作健康。
+磁盘发现带 `wouldTrack: true` 时，在消息中注明"该盘近 7 天有 N 天超过阈值（达到跟踪条件，影子统计）"。非 Available 的 VM 按订阅、区域和原因分组列出数量和代表 VM，不逐台诊断；只对用户追问或新出现的组再展开。`blind` 部分按租户汇总原因：需要 MFA 或重新登录的，请凭据所有者针对该租户执行 `az login --tenant <id>` 并保存登录。不要把这些租户当作健康。
 
 `collector-error` 表示巡检失明。每种错误只报告一次，写明原因（登录过期、缺少授权、Azure 限流）以及谁能修复。共享登录过期时，由凭据所有者重新登录；不要向其他成员索要凭据。
+
+## 每日汇总 cron（与 Project Digest 同步）
+
+Project Digest 每天北京 08:00 生成，收集前 24 小时的项目会话；`DIGEST_LATEST_ONLY_SESSIONS` 中列出的会话只取窗口内**最后一条** Agent 回复原文作为独立一节。因此每日汇总由一个**单独的 cron** 在北京 07:30 生成，发到**只有它发言**的会话，并且**只发一条消息**。
+
+启用（每个 Project 一次）：
+
+1. 请用户在 Project 内新建会话 "Azure 巡检日报"，在该会话中执行以下步骤。
+2. 按"启用巡检"第 1–3 步确定 `<tools-home>`、`<commit>`，为每个 Azure 凭据生成命令 `<watch-command> --tenant <该凭据的租户> --summary-only`。
+3. 用 `cron` 工具创建：
+   - `title`："Azure IaaS 每日汇总"
+   - `schedule`：`{"cron": "30 7 * * *", "timezone": "Asia/Shanghai"}`
+   - **不设 `script`**（一次执行只能带一个文件凭据，多个租户必须分开运行）
+   - `task`："加载 azure-ops skill，按 references/watch.md 的'每日汇总 cron'生成并发布今天的汇总。"
+   - 不传 destination，发回本会话。
+4. 告诉用户这个会话的 ID，由管理员在 Project Digest 的 App、preview、dispatch 进程设置 `DIGEST_LATEST_ONLY_SESSIONS=<本会话 ID>=Azure IaaS Daily Summary,<巡检告警会话 ID>=Latest Azure Alert`。
+
+每次触发：
+
+1. 读取本 cron 的 fire note，取得各租户的命令（凭据 handle、`--tenant`、`<commit>`）；第一次运行时按上面第 2 步生成并写入 fire note。
+2. **依次**执行每个租户的命令，每次只带该租户的一个凭据，不启动 subagent，不并发。
+3. 用下面的模板合成**一条**消息发布，不发线程回复，不发其他消息。
+
+模板（Markdown，数值取自各租户的 `daily-summary` 与摘要行）：
+
+```text
+# Azure IaaS 每日巡检汇总 — <YYYY-MM-DD> 07:30（北京时间）
+
+## <租户名>
+| 项目 | 值 |
+| --- | --- |
+| 读取状态 | 正常 / 无法读取：<错误码与原因> |
+| 订阅 / VM | <订阅数> 个订阅，<VM 数> 台 VM（运行中 <N>） |
+| 非 Available | <notAvailableCount> 台（24 小时内新增 <newIn24h>） |
+| 影子统计 | 如启用 loop 将跟踪 <wouldTrack> 项：<bucket 计数> |
+
+| 订阅 | 区域 | 状态 | 原因 | 数量 | 24h 新增 | 最早开始 | 示例 VM |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| … |
+```
+
+- 每个租户一节；没有非 Available VM 时写"无"。
+- 某租户命令失败（`collector-error`、超时、`WATCH_FETCH_FAILED`）时，该节"读取状态"写"无法读取"及原因，其余行写"—"，**不要省略该租户**，不要当作健康。
+- 时间用北京时间；持续时长只用 `oldestSince` 与 `newIn24h`。
 
 ## 临时扫描
 

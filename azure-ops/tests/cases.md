@@ -24,6 +24,7 @@
 | `巡检本项目所有 Azure 租户`（Project 有 3 个 Azure 凭据） | `watch`              | 列出各凭据及其租户并请用户确认，每个凭据一个 cron（只带该凭据并加 `--tenant`），都发回同一会话；不使用 swarm 或 subagent |
 | 巡检 cron 唤醒，只有 `disk-burst`（112 块盘）     | `watch`              | 不做深度诊断，一条消息给出总数、分组计数和最严重的 5 块盘，数十秒内结束 |
 | 巡检 cron 唤醒，只有 `health-recovered`        | `watch`              | 一条简短恢复消息，标题含租户名，不做诊断 |
+| 每日汇总 cron 在 07:30 触发（3 个租户，其中 1 个凭据过期） | `watch`              | 依次运行 3 条 `--summary-only` 命令，合成一条消息；过期租户写"无法读取"及原因，不省略 |
 专项用例：
 
 - `B 系列 vm-api-01 是不是 CPU credits 用完了？`：路由到 `vm cpu`，查询 CPU 与 credits；credits 缺失时不推断 burst 状态。
