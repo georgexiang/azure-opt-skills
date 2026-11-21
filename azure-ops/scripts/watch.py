@@ -999,6 +999,13 @@ def er_jobs(
     ], ERGW_NAMESPACE, gw_start, end, gateway, report)
 
 
+def down_peers(cfg: Config, peers: dict[str, dict[datetime, float]], at: datetime) -> list[str]:
+    return sorted(
+        p for p, pts in peers.items()
+        if held(pts, at, cfg.window, cfg.sustain, lambda v: v < DATAPATH_MIN)
+    )
+
+
 def evaluate_er_links(
     cfg: Config, end: datetime, circuit: dict[str, Any], metric: dict[str, Any], report: Report,
 ) -> None:
@@ -1013,13 +1020,7 @@ def evaluate_er_links(
         if peering and any(peering.lower() in p for p in circuit["enabledPeerings"]):
             sides[peering][dims.get("peer", "")] = points_of(ts, "average")
     for peering, peers in sorted(sides.items()):
-        def level(at: datetime) -> list[str]:
-            return sorted(
-                p for p, pts in peers.items()
-                if held(pts, at, cfg.window, cfg.sustain, lambda v: v < DATAPATH_MIN)
-            )
-
-        now_down, before = level(end), level(end - cfg.interval)
+        now_down, before = down_peers(cfg, peers, end), down_peers(cfg, peers, end - cfg.interval)
         if len(now_down) <= len(before):
             continue
         current = [v for p in now_down for v in window_values(peers[p], end, cfg.window)]
@@ -1076,7 +1077,7 @@ def evaluate_er_gateway(
             continue
         baseline = statistics.median(hourly)
         limit = ER_ROUTES_DROP * baseline
-        if onset(points, end, cfg, lambda v: v < limit, minutes, need):
+        if onset(points, end, cfg, lambda v, limit=limit: v < limit, minutes, need):
             metric_finding(cfg, report, "er-routes", "warning", net_ref(gw), end, {
                 "metric": name, "median": level, "baselineMedian": baseline,
                 "dropThreshold": ER_ROUTES_DROP,
@@ -1206,6 +1207,12 @@ def lb_jobs(
     ], LB_NAMESPACE, start, end, evaluate, report)
 
 
+def backend_level(cfg: Config, points: dict[datetime, float], at: datetime) -> int:
+    if held(points, at, cfg.window, cfg.sustain, lambda v: v < 1):
+        return 2
+    return 1 if held(points, at, cfg.window, cfg.sustain, lambda v: v < 99.5) else 0
+
+
 def evaluate_lb(
     cfg: Config, end: datetime, lb: dict[str, Any], metric: dict[str, Any], report: Report,
 ) -> None:
@@ -1219,14 +1226,8 @@ def evaluate_lb(
             }, min(current))
         if name != "DipAvailability" or str(lb.get("name", "")).lower() in AKS_LB_NAMES:
             continue
-
-        def level(at: datetime) -> int:
-            if held(points, at, cfg.window, cfg.sustain, lambda v: v < 1):
-                return 2
-            return 1 if held(points, at, cfg.window, cfg.sustain, lambda v: v < 99.5) else 0
-
-        now_level = level(end)
-        if now_level > level(end - cfg.interval):
+        now_level = backend_level(cfg, points, end)
+        if now_level > backend_level(cfg, points, end - cfg.interval):
             metric_finding(
                 cfg, report, "lb-backend", "critical" if now_level == 2 else "warning", net_ref(lb),
                 end, {
