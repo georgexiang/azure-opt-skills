@@ -2,6 +2,8 @@
 
 `scripts/watch.py` 由 cron 每 5 分钟执行一次：没有新情况时退出码为 0，不唤醒模型；有发现或采集失败时退出码为 1，输出 findings JSON 并唤醒 Agent。`az` 只通过同目录的 `azure_cli.sh --tools-home <tools-home>` 调用，用来取得令牌，同时保持持久工具目录与临时凭据 HOME 分离；令牌只在进程内使用，不输出。
 
+除 VM 外，同时巡检 NAT Gateway、ExpressRoute（线路与 ER 网关）、Application Gateway 和负载均衡；网络类指标规则默认影子运行，用 `--nat-alerts`、`--er-alerts`、`--agw-alerts`、`--lb-alerts` 分别开启唤醒。
+
 默认巡检登录身份可读的**全部租户的全部已启用订阅**：
 - 租户来自 ARM `/tenants` 与 `az account list --all` 的并集；对每个租户用 `az account get-access-token --tenant` 分别取 ARM 和 Azure Monitor 令牌，再列出该租户的订阅。
 - 每个租户分别调用 Resource Graph（每批 100 个订阅）。
@@ -33,6 +35,8 @@
 | `agw-pool-down` | Application Gateway v2 `HealthyHostCount`（Average，按 `BackendSettingsPool` 拆分） | 某后端池健康主机 15 分钟中 ≥ 10 分钟为 0，上一个 interval 的窗口未满足且其中有健康主机：池全挂。长期为 0 的空池不报 | critical |
 | `agw-unhealthy` | `UnhealthyHostCount`（同上） | 某池不健康主机 15 分钟中 ≥ 10 分钟 > 0，且刚开始发生；同一池已报 `agw-pool-down` 时不再报：冗余减少 | warning |
 | `agw-5xx` | `ResponseStatus`、`BackendResponseStatus`（Total，按 `HttpStatusGroup` 拆分） | 15 分钟窗口请求数 ≥ 100、5xx 占比 ≥ 5%，上一个 interval 的窗口未满足，且占比 > 自身 7 天小时 5xx 占比中位数的 3 倍（无基线时不抑制）。`backend5xx` 是后端返回的 5xx 数，与 `errors` 的差为网关自身产生的 5xx（如 502 连不上后端） | warning |
+| `lb-datapath` | Standard 负载均衡 `VipAvailability`（Average，不拆维度） | 15 分钟中 ≥ 10 分钟低于 90，且上一个 interval 的窗口未满足（与 NAT 相同） | critical |
+| `lb-backend` | Standard 负载均衡 `DipAvailability`（Average，不拆维度，即所有后端健康探测的健康百分比） | 15 分钟中 ≥ 10 分钟低于 100（冗余减少）或低于 1（全部后端不可用），且级别比上一个 interval 的窗口高。名称为 `kubernetes` / `kubernetes-internal` 的 AKS 托管负载均衡不跑这条（后端随节点伸缩变动），保留 `lb-datapath` | 低于 100：warning；全部不可用：critical |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
 | `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）、`network`（各类网络资源数量）、`expressRouteServiceHealth`（正在进行的 ExpressRoute 计划维护与服务问题）；看不到的租户在输出的 `blind` 中。`notAvailableGroups` 按资源类型（`kind`：`virtualMachine`、`expressRouteCircuit`、`applicationGateway`、`loadBalancer`）分组。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
@@ -47,6 +51,8 @@
 **ExpressRoute 规则默认影子运行**：不加 `--er-alerts` 时，`er-bgp`、`er-arp`、`er-routes`、`er-gateway-cpu` 只计入摘要行（例如 `3 ER circuit(s) and 2 ER gateway(s) (er: bgp 1 (worst 40.0), maintenance 1 (worst 20.0))`），不唤醒；确认阈值后追加 `--er-alerts`。ER 网关指标最小粒度为 5 分钟，因此按 5 分钟点计数。线路与网关可能在不同订阅，凭据需能读到线路所在订阅。每轮请求：每 50 条线路 1 次、每 50 个 ER 网关 2 次（按订阅 + 区域分批），基线只对路由数下降的候选读取。所有网络指标批次与 NAT 一起在磁盘之前并发采集。
 
 **Application Gateway 规则默认影子运行**：不加 `--agw-alerts` 时只计入摘要行（例如 `12 app gateway(s) (agw: pool-down 1 (worst 0.0), unhealthy 3 (worst 2.0))`）；确认后追加 `--agw-alerts`。只读 v2 SKU（`sku.tier` 以 `_v2` 结尾）且未停止的网关；v1 SKU 指标不同且已到退役期，只在 `daily-summary` 的 `network.applicationGatewayV1` 中计数。每轮请求：每 50 个网关 2 次，5xx 基线只对候选读取。
+
+**负载均衡规则默认影子运行**：不加 `--lb-alerts` 时只计入摘要行（例如 `120 load balancer(s) (lb: backend 4 (worst 50.0))`）；确认后追加 `--lb-alerts`。只读 Standard SKU；Basic SKU 没有这些指标，只在 `network.loadBalancerBasic` 中计数，AKS 托管的数量在 `network.loadBalancerAks`。不拆 `BackendIPAddress` 维度，具体哪个后端掉线由唤醒后的诊断确认。每轮请求：每 50 个负载均衡 1 次（数百个时约 10–20 次，取决于订阅 + 区域分布）。
 
 `daily-summary` 中的 `expressRouteBandwidth` 列出最近 24 小时入向或出向带宽利用率（`IngressBandwidthUtilization` / `EgressBandwidthUtilization`，每分钟最大值）连续 ≥ 80% 至少 `--sustain-minutes`（10）分钟的线路：峰值与最长连续分钟数。每条线路 1 次调用，只在 `--summary-only` 时读取。
 
@@ -110,6 +116,8 @@ NAT 发现（开启 `--nat-alerts` 后）：数据路径异常先发事实；诊
 ExpressRoute 发现（开启 `--er-alerts` 后）：两侧下降先发事实（线路、peering、下降的侧、时间）。诊断看 `serviceHealth` 中的维护或服务问题、同订阅另一条线路是否同时下降、ER 网关学到的路由数、最近 24 小时的线路与网关变更；一侧下降说明冗余丢失但仍可用，建议联系线路运营商或开 Azure Support 工单时写明前提。`er-routes` 降为 0 时，区分本地设备停止通告路由与网关问题，不要直接建议重置网关。
 
 Application Gateway 发现（开启 `--agw-alerts` 后）：`agw-pool-down` 先发事实（网关、池、时间）。诊断看该池后端 VM 的健康与平台事件、后端健康探测配置与最近变更、NSG/UDR 变更；`agw-5xx` 用 `errors - backend5xx` 区分网关自身与后端的错误。按池、按网关合并同因发现。
+
+负载均衡发现（开启 `--lb-alerts` 后）：`lb-datapath` 与全部后端不可用先发事实。诊断按 `BackendIPAddress` 拆分 `DipAvailability` 找出掉线的后端，对照这些 VM 的 Resource Health（平台健康正常而探测失败，多半是应用或探测配置问题）、NSG 变更与健康探测设置。
 
 `health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
 

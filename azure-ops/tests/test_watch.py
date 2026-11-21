@@ -973,6 +973,56 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(body["findings"][0]["observed"]["network"],
                          {"applicationGateway": 2, "applicationGatewayV1": 1})
 
+    def lb(self, name: str, sku: str = "Standard") -> str:
+        rid = self.net("loadbalancers", name, sku=sku, rules=1)
+        self.world["metrics"].setdefault(f"{rid}|VipAvailability|", {"base": 100.0})
+        self.world["metrics"].setdefault(f"{rid}|DipAvailability|", {"base": 100.0})
+        return rid
+
+    def test_load_balancer_problems_are_counted_in_shadow_without_waking(self) -> None:
+        a = self.lb("lb-a")
+        self.world["metrics"][f"{a}|DipAvailability|"] = {"base": 100.0, "recent": 50.0, "recentMinutes": 12}
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("1 load balancer(s) (lb: backend 1 (worst 50.0))", summary)
+
+    def test_load_balancer_alerts_report_datapath_and_backend_health(self) -> None:
+        path = self.lb("lb-path")
+        partial = self.lb("lb-partial")
+        dead = self.lb("lb-dead")
+        worse = self.lb("lb-worse")
+        aks = self.lb("kubernetes")
+        basic = self.lb("lb-basic", sku="Basic")
+        self.world["metrics"].update({
+            f"{path}|VipAvailability|": {"base": 100.0, "recent": 30.0, "recentMinutes": 12},
+            f"{partial}|DipAvailability|": {"base": 100.0, "recent": 50.0, "recentMinutes": 12},
+            f"{dead}|DipAvailability|": {"base": 100.0, "recent": 0.0, "recentMinutes": 12},
+            f"{worse}|DipAvailability|": {"base": 50.0, "recent": 0.0, "recentMinutes": 12},
+            f"{aks}|DipAvailability|": {"base": 100.0, "recent": 0.0, "recentMinutes": 12},
+            f"{aks}|VipAvailability|": {"base": 100.0, "recent": 0.0, "recentMinutes": 12},
+            f"{basic}|VipAvailability|": {"base": 100.0, "recent": 0.0, "recentMinutes": 12},
+        })
+        code, body, _, _ = self.watch("--lb-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rules(body), [
+            ("lb-backend", "lb-dead"), ("lb-backend", "lb-partial"), ("lb-backend", "lb-worse"),
+            ("lb-datapath", "kubernetes"), ("lb-datapath", "lb-path"),
+        ])
+        assert body is not None
+        severity = {(f["rule"], f["resource"]["name"]): f["severity"] for f in body["findings"]}
+        self.assertEqual(severity[("lb-backend", "lb-partial")], "warning")
+        self.assertEqual(severity[("lb-backend", "lb-dead")], "critical")
+        self.assertEqual(severity[("lb-backend", "lb-worse")], "critical")
+
+    def test_daily_summary_counts_basic_and_aks_load_balancers(self) -> None:
+        self.lb("lb-a")
+        self.lb("lb-basic", sku="Basic")
+        self.lb("kubernetes-internal")
+        code, body, _, _ = self.watch("--summary-only")
+        assert body is not None
+        self.assertEqual(body["findings"][0]["observed"]["network"],
+                         {"loadBalancer": 3, "loadBalancerBasic": 1, "loadBalancerAks": 1})
+
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")
         self.assertEqual(code, 2)

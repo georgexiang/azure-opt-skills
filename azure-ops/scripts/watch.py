@@ -29,6 +29,8 @@ NAT_NAMESPACE = "microsoft.network/natgateways"
 ER_NAMESPACE = "microsoft.network/expressroutecircuits"
 ERGW_NAMESPACE = "microsoft.network/virtualnetworkgateways"
 AGW_NAMESPACE = "microsoft.network/applicationgateways"
+LB_NAMESPACE = "microsoft.network/loadbalancers"
+AKS_LB_NAMES = {"kubernetes", "kubernetes-internal"}
 DATAPATH_MIN = 90.0
 AGW_5XX_PCT = 5.0
 AGW_MIN_REQUESTS = 100.0
@@ -190,6 +192,7 @@ class Config:
     nat_alerts: bool
     er_alerts: bool
     agw_alerts: bool
+    lb_alerts: bool
 
 
 @dataclass
@@ -823,7 +826,10 @@ def hourly_values(
 
 
 ALERT_FLAGS = {"nat": "nat_alerts", "er": "er_alerts", "agw": "agw_alerts", "lb": "lb_alerts"}
-LOWER_IS_WORSE = {"nat-datapath", "er-bgp", "er-arp", "er-maintenance", "er-routes", "agw-pool-down"}
+LOWER_IS_WORSE = {
+    "nat-datapath", "er-bgp", "er-arp", "er-maintenance", "er-routes", "agw-pool-down",
+    "lb-datapath", "lb-backend",
+}
 
 
 def metric_finding(
@@ -1183,6 +1189,53 @@ def evaluate_agw_5xx(
     }, pct)
 
 
+def lb_jobs(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    net: list[dict[str, Any]], report: Report,
+) -> list[Any]:
+    end = now - cfg.metric_lag
+    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+    lbs = [r for r in net if r["kind"] == "loadBalancer" and str(r.get("sku", "")).lower() == "standard"]
+
+    def evaluate(tenant: Tenant, lb: dict[str, Any], metrics: list[dict[str, Any]]) -> None:
+        for metric in metrics:
+            evaluate_lb(cfg, end, lb, metric, report)
+
+    return metric_jobs(azure, tenants, lbs, "load balancer", [
+        (["VipAvailability", "DipAvailability"], None, "average", "PT1M"),
+    ], LB_NAMESPACE, start, end, evaluate, report)
+
+
+def evaluate_lb(
+    cfg: Config, end: datetime, lb: dict[str, Any], metric: dict[str, Any], report: Report,
+) -> None:
+    name = str((metric.get("name") or {}).get("value", ""))
+    for _, points in series_of(metric, None):
+        current = window_values(points, end, cfg.window)
+        if name == "VipAvailability" and onset(points, end, cfg, lambda v: v < DATAPATH_MIN):
+            metric_finding(cfg, report, "lb-datapath", "critical", net_ref(lb), end, {
+                "metric": name, "median": round(statistics.median(current), 2),
+                "min": round(min(current), 2), "threshold": DATAPATH_MIN,
+            }, min(current))
+        if name != "DipAvailability" or str(lb.get("name", "")).lower() in AKS_LB_NAMES:
+            continue
+
+        def level(at: datetime) -> int:
+            if held(points, at, cfg.window, cfg.sustain, lambda v: v < 1):
+                return 2
+            return 1 if held(points, at, cfg.window, cfg.sustain, lambda v: v < 99.5) else 0
+
+        now_level = level(end)
+        if now_level > level(end - cfg.interval):
+            metric_finding(
+                cfg, report, "lb-backend", "critical" if now_level == 2 else "warning", net_ref(lb),
+                end, {
+                    "metric": name, "healthyPctMedian": round(statistics.median(current), 2),
+                    "healthyPctMin": round(min(current), 2),
+                }, min(current), str(now_level),
+            )
+
+
 def er_bandwidth(
     azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
     net: list[dict[str, Any]], report: Report,
@@ -1514,6 +1567,10 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         report.network[row["kind"]] += 1
         if row["kind"] == "applicationGateway" and is_agw_v1(row):
             report.network["applicationGatewayV1"] += 1
+        if row["kind"] == "loadBalancer" and str(row.get("sku", "")).lower() == "basic":
+            report.network["loadBalancerBasic"] += 1
+        if row["kind"] == "loadBalancer" and str(row.get("name", "")).lower() in AKS_LB_NAMES:
+            report.network["loadBalancerAks"] += 1
     targets = {**vms, **{r["id"]: r for r in net if r["kind"] != "expressRouteGateway"}}
     check_health(cfg, now, targets, health, report)
     if cfg.summary_only:
@@ -1547,6 +1604,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
         nat_jobs(azure, cfg, now, tenants, nats, report)
         + er_jobs(azure, cfg, now, tenants, net, report)
         + agw_jobs(azure, cfg, now, tenants, net, report)
+        + lb_jobs(azure, cfg, now, tenants, net, report)
     )
     with ThreadPoolExecutor(max_workers=cfg.workers) as pool:
         list(pool.map(lambda job: job(), jobs))
@@ -1590,6 +1648,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{report.network['expressRouteCircuit']} ER circuit(s) and "
         f"{report.network['expressRouteGateway']} ER gateway(s) ({shadow_text(report, 'er')}), "
         f"{report.network['applicationGateway']} app gateway(s) ({shadow_text(report, 'agw')}), "
+        f"{report.network['loadBalancer']} load balancer(s) ({shadow_text(report, 'lb')}), "
         f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
         f"{report.calls} call(s) in {elapsed:.0f}s"
     )
@@ -1617,7 +1676,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Read-only Azure VM health and disk watch across every tenant and subscription "
+        description="Read-only Azure VM, disk and network watch across every tenant and subscription "
         "the signed-in identity can read. Exit 0: nothing new. Exit 1: findings or collection "
         "failure, printed as JSON."
     )
@@ -1642,6 +1701,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--nat-alerts", action="store_true")
     parser.add_argument("--er-alerts", action="store_true")
     parser.add_argument("--agw-alerts", action="store_true")
+    parser.add_argument("--lb-alerts", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -1669,6 +1729,7 @@ def main(argv: list[str] | None = None) -> int:
         nat_alerts=args.nat_alerts,
         er_alerts=args.er_alerts,
         agw_alerts=args.agw_alerts,
+        lb_alerts=args.lb_alerts,
     )
     code, text = run(cfg)
     print(text)
