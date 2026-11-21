@@ -23,10 +23,15 @@
 | `disk-latency` | `OS Disk Latency`、按 LUN 拆分的 `Data Disk Latency`，1 分钟平均值 | 最近 `--window-minutes`（15）分钟中至少 `--sustain-minutes`（10）分钟超过 `--latency-ms`（20 ms），提前一个 interval 的同长窗口未达到该条件，且窗口中位数大于过去 `--baseline-days`（7）天小时均值中位数的 `--latency-ratio`（3）倍。基线缺失时不抑制。同时给出 `daysOverThreshold`（基线 7 天内有小时均值超过 `--latency-ms` 的天数）与 `wouldTrack`（≥ 3 天，loop 影子标记） | warning |
 | `disk-saturation` | OS 盘和数据盘的 IOPS、带宽 Consumed Percentage，按 LUN 拆分 | 与上一条相同的持续和"新发生"判断，阈值为 `--saturation-pct`（90%），不使用基线；并且**同一块盘、同一 LUN 的延迟中位数也超过 `--latency-ms`**，该延迟记在 `latencyMedian`。只跑满配额、延迟正常的盘是批处理等负载的常态，不报，只计入摘要行的 `saturated without latency` 和 `daily-summary` 的 `saturatedWithoutLatency` | warning |
 | `disk-burst` | 采集器自身 | 一轮里 `disk-latency` 与 `disk-saturation` 合计超过 `--disk-burst`（默认 20）时，合并为这一条：总数、按订阅/区域/规则的分组计数（前 10 组）、延迟最高的 5 块盘（`latencyMs`，饱和类附 `consumedPct`）。大批磁盘同时变慢通常是批处理负载或共同依赖，不逐块报告 | warning |
+| `nat-datapath` | NAT Gateway `DatapathAvailability`（Average） | 15 分钟中 ≥ 10 分钟低于 90（Microsoft 建议的告警线），且上一个 interval 的同长窗口未满足 | critical |
+| `nat-snat-failures` | NAT Gateway `SNATConnectionCount`（Total，`ConnectionState` = Failed） | 15 分钟中 ≥ 10 分钟每分钟失败连接超过 10，刚开始发生，且窗口中位数 > 自身 7 天每分钟基线的 3 倍（无基线时不抑制）。失败连接 > 0 通常意味着 SNAT 端口耗尽或连接数上限 | warning |
+| `nat-packet-drops` | NAT Gateway `PacketDropCount`（Total） | 同上，下限为每分钟 100 个丢包 | warning |
 | `collector-error` | 采集器自身 | 主身份不可用（`AZ_NOT_FOUND`、`AUTH_REQUIRED`），或没有任何可读的租户或订阅（`NO_COVERAGE`） | critical |
 | `daily-summary` | `--summary-only` | 只由每日汇总 cron 以 `--summary-only` 运行时产生，总是输出：`notAvailableCount`、`newIn24h`（由 Resource Health 历史得出的真实开始时间在 24 小时内的数量）、按订阅/区域/状态/原因分组的 `notAvailableGroups`（数量、`newIn24h`、最早开始时间 `oldestSince`、3 台代表 VM）、`loopShadow`（如启用 loop 会跟踪的数量，按持续时长分桶，只统计不写入）、可读租户（ID、名称、订阅数）；看不到的租户在输出的 `blind` 中。`--summary-only` 不查磁盘指标、不跑其他规则 | warning |
 
 指标窗口截止于当前时间之前 `--metric-lag-minutes`（3）分钟，用来避开数据写入延迟。
+
+**NAT Gateway 规则默认影子运行**：不加 `--nat-alerts` 时，三条 NAT 规则只计算、不产生 finding、不唤醒，结果写在摘要行，例如 `33 NAT gateway(s) (nat: datapath 1 (worst 52.0), snat-failures 2 (worst 140.0))`，可在 cron 运行记录中查看。影子运行一周、确认阈值后，在命令中追加 `--nat-alerts` 开启告警。NAT 资源与 VM 一样受 `--tenant` / `--scope` 限制，并在磁盘之前采集，不受磁盘截止时间影响。`daily-summary` 中的 `natGateways` 为 NAT 数量。
 
 单个租户或订阅看不到时，只计入摘要行的 `blind` 数量和 `daily-summary`，不会每 5 分钟唤醒一次。
 
@@ -82,6 +87,8 @@ cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`�
    - 平台事件：迁移失败或宿主机功能降级是宿主机风险信号，不能证明已经发生故障，要明确说明。
 5. **建议**：给出符合证据、影响最小的动作，写明已验证和未验证的前提、预期效果、副作用、执行方、执行后如何验证、何时回退。不得把重启、重新部署、调整规格或区域切换作为无条件结论。不在 Azure 中执行任何变更。
 6. **发布**：在投递会话中，每个事件发一条消息，同因的 finding 合并。**消息标题必须包含租户名**（取 cron 标题中 "·" 之后的部分，例如 "Azure IaaS 巡检 · Contoso-EU — 19:16"）。结论在前，然后是受影响 VM（Azure 名称和计算机名）、带时间的证据、不确定性、建议。长证据放到线程回复。
+
+NAT 发现（开启 `--nat-alerts` 后）：数据路径异常先发事实；诊断查看该 NAT 关联子网中 VM 的出站相关症状、NAT 公网 IP / 前缀数量与 SNAT 端口容量、空闲超时设置、同区域 Service Health。建议增加公网 IP 或前缀扩容 SNAT 容量时，写明前提、费用影响与回退方式。
 
 `health-recovered`：发一条简短的恢复消息（VM、恢复前状态、恢复时间），不做诊断。
 

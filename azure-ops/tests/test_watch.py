@@ -82,7 +82,7 @@ class FakeArm(BaseHTTPRequestHandler):
         return next(t for t, subs in self.world["tenants"].items() if sub in subs)
 
     def series(self, resource: str, names: list[str], luns: list[str], start: datetime,
-               end: datetime, hourly: bool) -> list[dict[str, Any]]:
+               end: datetime, hourly: bool, dim: str = "lun") -> list[dict[str, Any]]:
         value = []
         for name in names:
             series = []
@@ -98,10 +98,10 @@ class FakeArm(BaseHTTPRequestHandler):
                         v = spec.get("hourly", base)
                     else:
                         v = spec.get("recent", base) if index < spec.get("recentMinutes", 0) else base
-                    points.append({"timeStamp": iso(moment), "average": v})
+                    points.append({"timeStamp": iso(moment), "average": v, "total": v})
                     moment -= timedelta(hours=1) if hourly else timedelta(minutes=1)
                     index += 1
-                meta = [{"name": {"value": "lun"}, "value": lun}] if lun else []
+                meta = [{"name": {"value": dim}, "value": lun}] if lun else []
                 series.append({"metadatavalues": meta, "data": list(reversed(points))})
             value.append({"name": {"value": name}, "timeseries": series})
         return value
@@ -146,7 +146,9 @@ class FakeArm(BaseHTTPRequestHandler):
                 return self.reply(400, {"error": {"message": "bad", "details": [{"code": "InvalidQuery", "message": "parse"}]}})
             query = body["query"]
             subs = set(body["subscriptions"])
-            if query.startswith("Resources"):
+            if "natgateways" in query:
+                rows = [n for n in self.world.get("nats", []) if n["subscriptionId"] in subs]
+            elif query.startswith("Resources"):
                 rows = [v for v in self.world["vms"] if v["subscriptionId"] in subs]
             else:
                 key = "health" if "availabilitystatuses" in query else "annotations"
@@ -161,10 +163,16 @@ class FakeArm(BaseHTTPRequestHandler):
             return self.reply(400, {"error": {"message": "Failed to find metric configuration"}})
         start = datetime.fromisoformat(params["starttime"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(params["endtime"].replace("Z", "+00:00"))
-        luns = ["0", "1"] if params.get("filter") else [""]
+        dim = "ConnectionState" if params["metricnamespace"] == "microsoft.network/natgateways" else "lun"
+        if not params.get("filter"):
+            luns = [""]
+        elif dim == "ConnectionState":
+            luns = ["Attempted", "Failed"]
+        else:
+            luns = ["0", "1"]
         self.world.setdefault("batches", []).append((region, sub, len(body["resourceids"])))
         values = [
-            {"resourceid": rid, "value": self.series(rid.lower(), names, luns, start, end, False)}
+            {"resourceid": rid, "value": self.series(rid.lower(), names, luns, start, end, False, dim)}
             for rid in body["resourceids"]
         ]
         self.reply(200, {"values": values})
@@ -644,6 +652,56 @@ class WatchTests(unittest.TestCase):
         observed = {f["resource"]["name"]: f["observed"] for f in body["findings"]}
         self.assertEqual((observed["vm-a"]["daysOverThreshold"], observed["vm-a"]["wouldTrack"]), (3, True))
         self.assertEqual((observed["vm-b"]["daysOverThreshold"], observed["vm-b"]["wouldTrack"]), (0, False))
+
+    def nat(self, name: str) -> str:
+        nid = f"/subscriptions/{SUB}/resourcegroups/{RG}/providers/microsoft.network/natgateways/{name}"
+        self.world.setdefault("nats", []).append({
+            "id": nid, "name": name, "subscriptionId": SUB, "resourceGroup": RG,
+            "location": "westeurope", "sku": "Standard", "subnets": 2, "publicIps": 1,
+        })
+        return nid
+
+    def test_nat_problems_are_counted_in_shadow_without_waking(self) -> None:
+        a = self.nat("nat-a")
+        ongoing = self.nat("nat-ongoing")
+        self.world["metrics"] = {
+            f"{a}|DatapathAvailability|": {"base": 100.0, "recent": 50.0, "recentMinutes": 12},
+            f"{ongoing}|DatapathAvailability|": {"base": 100.0, "recent": 40.0, "recentMinutes": 200},
+        }
+        code, body, summary, _ = self.watch()
+        self.assertEqual((code, body), (0, None), summary)
+        self.assertIn("2 NAT gateway(s) (nat: datapath 1 (worst 50.0))", summary)
+
+    def test_nat_alerts_report_datapath_snat_failures_and_drops_above_baseline(self) -> None:
+        a, b, c, d = (self.nat(n) for n in ("nat-a", "nat-b", "nat-c", "nat-d"))
+        self.world["metrics"] = {
+            f"{a}|DatapathAvailability|": {"base": 100.0, "recent": 50.0, "recentMinutes": 12},
+            f"{b}|SNATConnectionCount|Failed": {"base": 0.0, "recent": 40.0, "recentMinutes": 12, "hourly": 60.0},
+            f"{b}|SNATConnectionCount|Attempted": {"base": 5.0, "recent": 400.0, "recentMinutes": 12, "hourly": 300.0},
+            f"{c}|PacketDropCount|": {"base": 0.0, "recent": 500.0, "recentMinutes": 12, "hourly": 600.0},
+            f"{d}|PacketDropCount|": {"base": 0.0, "recent": 500.0, "recentMinutes": 12, "hourly": 12000.0},
+        }
+        for n in (a, b, c, d):
+            self.world["metrics"].setdefault(f"{n}|DatapathAvailability|", {"base": 100.0})
+        code, body, _, _ = self.watch("--nat-alerts")
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            self.rules(body),
+            [("nat-datapath", "nat-a"), ("nat-packet-drops", "nat-c"), ("nat-snat-failures", "nat-b")],
+        )
+        assert body is not None
+        datapath = next(f for f in body["findings"] if f["rule"] == "nat-datapath")
+        self.assertEqual((datapath["severity"], datapath["observed"]["min"]), ("critical", 50.0))
+        snat = next(f for f in body["findings"] if f["rule"] == "nat-snat-failures")
+        self.assertEqual((snat["observed"]["series"], snat["observed"]["baselinePerMinute"]), ("ConnectionState Failed", 1.0))
+
+    def test_daily_summary_counts_nat_gateways(self) -> None:
+        self.nat("nat-a")
+        self.nat("nat-b")
+        code, body, _, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        self.assertEqual(body["findings"][0]["observed"]["natGateways"], 2)
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

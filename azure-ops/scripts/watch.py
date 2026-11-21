@@ -25,6 +25,11 @@ METRICS_API = "2023-10-01"
 BATCH_API = "2024-02-01"
 METRICS_RESOURCE = "https://metrics.monitor.azure.com"
 VM_NAMESPACE = "microsoft.compute/virtualmachines"
+NAT_NAMESPACE = "microsoft.network/natgateways"
+NAT_DATAPATH_MIN = 90.0
+NAT_RATIO = 3.0
+NAT_FAILED_FLOOR = 10.0
+NAT_DROPS_FLOOR = 100.0
 ARG_SUBSCRIPTION_CHUNK = 100
 BATCH_RESOURCE_CHUNK = 50
 OUTPUT_BUDGET = 7000
@@ -37,6 +42,13 @@ LOOP_TRACK_DISK_DAYS = 3
 AGE_BUCKETS = ((timedelta(days=1), "<24h"), (timedelta(days=7), "1-7d"))
 RG_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.()")
 HEX = set("0123456789abcdef")
+
+NAT_QUERY = """Resources
+| where type =~ 'microsoft.network/natgateways'
+| project id = tolower(id), name, subscriptionId, resourceGroup, location,
+  sku = tostring(sku.name),
+  subnets = array_length(properties.subnets),
+  publicIps = array_length(properties.publicIpAddresses) + array_length(properties.publicIpPrefixes)"""
 
 VM_QUERY = """Resources
 | where type =~ 'microsoft.compute/virtualmachines'
@@ -127,6 +139,7 @@ class Config:
     workers: int
     deadline_seconds: float
     disk_burst: int
+    nat_alerts: bool
 
 
 @dataclass
@@ -141,6 +154,8 @@ class Report:
     unhealthy: list[dict[str, Any]] = field(default_factory=list)
     series: int = 0
     saturated: int = 0
+    nats: int = 0
+    nat_shadow: dict[str, list[float]] = field(default_factory=dict)
     skipped: int = 0
     tenant_names: dict[str, str] = field(default_factory=dict)
     readable: list[str] = field(default_factory=list)
@@ -347,15 +362,16 @@ class Azure:
     def batch_metrics(
         self, tenant: Tenant, subscription: str, region: str, resources: list[str],
         names: list[str], start: datetime, end: datetime, filter_expr: str | None,
+        namespace: str = VM_NAMESPACE, aggregation: str = "average",
     ) -> list[dict[str, Any]]:
         query = {
             "api-version": BATCH_API,
-            "metricnamespace": VM_NAMESPACE,
+            "metricnamespace": namespace,
             "metricnames": ",".join(names),
             "starttime": iso(start),
             "endtime": iso(end),
             "interval": "PT1M",
-            "aggregation": "average",
+            "aggregation": aggregation,
         }
         if filter_expr:
             query["filter"] = filter_expr
@@ -376,14 +392,14 @@ class Azure:
 
     def hourly(
         self, tenant: Tenant, resource: str, name: str, start: datetime, end: datetime,
-        filter_expr: str | None,
+        filter_expr: str | None, aggregation: str = "Average",
     ) -> list[dict[str, Any]]:
         query = {
             "api-version": METRICS_API,
             "metricnames": name,
             "timespan": f"{iso(start)}/{iso(end)}",
             "interval": "PT1H",
-            "aggregation": "Average",
+            "aggregation": aggregation,
         }
         if filter_expr:
             query["$filter"] = filter_expr
@@ -394,7 +410,9 @@ class Azure:
         return list((self.http.call("GET", url, tenant.arm_token) or {}).get("value") or [])
 
 
-def series_of(metric: dict[str, Any], split: str | None) -> list[tuple[str, dict[datetime, float]]]:
+def series_of(
+    metric: dict[str, Any], split: str | None, field_name: str = "average",
+) -> list[tuple[str, dict[datetime, float]]]:
     out = []
     for ts in metric.get("timeseries") or []:
         label = ""
@@ -405,8 +423,8 @@ def series_of(metric: dict[str, Any], split: str | None) -> list[tuple[str, dict
         points = {}
         for point in ts.get("data") or []:
             moment = parse_time(str(point.get("timeStamp", "")))
-            if moment is not None and point.get("average") is not None:
-                points[moment] = float(point["average"])
+            if moment is not None and point.get(field_name) is not None:
+                points[moment] = float(point[field_name])
         out.append((label, points))
     return out
 
@@ -631,6 +649,137 @@ def baseline_of(
         return None, None
     days = len({t.date() for t, v in points if v > cfg.latency_ms})
     return statistics.median(v for _, v in points), days
+
+
+def nat_ref(nat: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": nat["id"],
+        "name": nat.get("name"),
+        "subscriptionId": nat.get("subscriptionId"),
+        "location": nat.get("location"),
+        "subnets": nat.get("subnets"),
+        "publicIps": nat.get("publicIps"),
+    }
+
+
+def nat_onset(points: dict[datetime, float], end: datetime, cfg: Config, hit: Any) -> bool:
+    current = window_values(points, end, cfg.window)
+    previous = window_values(points, end - cfg.interval, cfg.window)
+    return (
+        sum(1 for v in current if hit(v)) >= cfg.sustain
+        and sum(1 for v in previous if hit(v)) < cfg.sustain
+    )
+
+
+def nat_baseline(
+    azure: Azure, cfg: Config, tenant: Tenant, nat: dict[str, Any], name: str,
+    filter_expr: str | None, now: datetime, report: Report,
+) -> float | None:
+    try:
+        metrics = azure.hourly(
+            tenant, nat["id"], name, now - timedelta(days=cfg.baseline_days),
+            now - timedelta(hours=1), filter_expr, "Total",
+        )
+    except CollectorError as exc:
+        report.gaps.append(f"{nat.get('name')} {name} baseline: {exc}")
+        return None
+    hourly = [v for m in metrics for _, pts in series_of(m, None, "total") for v in pts.values()]
+    return statistics.median(hourly) / 60 if hourly else None
+
+
+def nat_finding(
+    cfg: Config, report: Report, rule: str, severity: str, nat: dict[str, Any], end: datetime,
+    observed: dict[str, Any],
+) -> None:
+    worst = observed.get("min") if rule == "nat-datapath" else observed.get("max")
+    report.nat_shadow.setdefault(rule, []).append(float(worst or 0))
+    if not cfg.nat_alerts:
+        return
+    report.findings.append({
+        "rule": rule,
+        "severity": severity,
+        "resource": nat_ref(nat),
+        "episode": f"{nat['id']}|{rule}|{iso(end)}",
+        "observed": observed,
+    })
+
+
+def check_nats(
+    azure: Azure, cfg: Config, now: datetime, tenants: dict[str, Tenant],
+    nats: list[dict[str, Any]], report: Report,
+) -> None:
+    end = now - cfg.metric_lag
+    start = end - cfg.interval - timedelta(minutes=cfg.window + 5)
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for nat in nats:
+        groups[(str(nat["tenantId"]), str(nat["subscriptionId"]).lower(), str(nat["location"]))].append(nat)
+    for (tenant_id, subscription, region), members in sorted(groups.items()):
+        tenant = tenants[tenant_id]
+        for i in range(0, len(members), BATCH_RESOURCE_CHUNK):
+            chunk = members[i : i + BATCH_RESOURCE_CHUNK]
+            by_id = {n["id"]: n for n in chunk}
+            ids = [n["id"] for n in chunk]
+            try:
+                plain = azure.batch_metrics(
+                    tenant, subscription, region, ids, ["DatapathAvailability", "PacketDropCount"],
+                    start, end, None, NAT_NAMESPACE, "average,total",
+                )
+                states = azure.batch_metrics(
+                    tenant, subscription, region, ids, ["SNATConnectionCount"],
+                    start, end, "ConnectionState eq '*'", NAT_NAMESPACE, "total",
+                )
+            except CollectorError as exc:
+                report.gaps.append(f"{subscription}/{region} NAT metrics: {exc}")
+                continue
+            for entry in plain + states:
+                nat = by_id.get(str(entry.get("resourceid", "")).lower())
+                if nat is None:
+                    continue
+                for metric in entry.get("value") or []:
+                    evaluate_nat(azure, cfg, tenant, now, end, nat, metric, report)
+
+
+def evaluate_nat(
+    azure: Azure, cfg: Config, tenant: Tenant, now: datetime, end: datetime,
+    nat: dict[str, Any], metric: dict[str, Any], report: Report,
+) -> None:
+    name = str((metric.get("name") or {}).get("value", ""))
+    if name == "DatapathAvailability":
+        for _, points in series_of(metric, None):
+            if nat_onset(points, end, cfg, lambda v: v < NAT_DATAPATH_MIN):
+                current = window_values(points, end, cfg.window)
+                nat_finding(cfg, report, "nat-datapath", "critical", nat, end, {
+                    "metric": name, "median": round(statistics.median(current), 2),
+                    "min": round(min(current), 2), "threshold": NAT_DATAPATH_MIN,
+                })
+        return
+    if name == "PacketDropCount":
+        rule, floor, filter_expr, field_name, wanted = (
+            "nat-packet-drops", NAT_DROPS_FLOOR, None, "total", None
+        )
+    elif name == "SNATConnectionCount":
+        rule, floor, filter_expr, field_name, wanted = (
+            "nat-snat-failures", NAT_FAILED_FLOOR, "ConnectionState eq 'Failed'", "total",
+            "ConnectionState Failed",
+        )
+    else:
+        return
+    split = "ConnectionState" if wanted else None
+    for label, points in series_of(metric, split, field_name):
+        if wanted and label.lower() != wanted.lower():
+            continue
+        if not nat_onset(points, end, cfg, lambda v: v > floor):
+            continue
+        current = window_values(points, end, cfg.window)
+        level = statistics.median(current)
+        baseline = nat_baseline(azure, cfg, tenant, nat, name, filter_expr, now, report)
+        if baseline is not None and level <= NAT_RATIO * baseline:
+            continue
+        nat_finding(cfg, report, rule, "warning", nat, end, {
+            "metric": name, "series": label or None, "median": round(level, 2),
+            "max": round(max(current), 2), "floorPerMinute": floor,
+            "baselinePerMinute": None if baseline is None else round(baseline, 2),
+        })
 
 
 def check_disks(
@@ -892,6 +1041,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     ]
     report.subscriptions = sum(len(t.subscriptions) for t in tenants.values())
     vms: dict[str, dict[str, Any]] = {}
+    nats: list[dict[str, Any]] = []
     health: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
     lookback = int((cfg.interval + cfg.health_lag).total_seconds() // 60) + 1
@@ -902,6 +1052,10 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 vm["tenantId"] = tenant.id
                 if in_scope(cfg, vm):
                     vms[str(vm["id"]).lower()] = vm
+            for nat in azure.graph(tenant, NAT_QUERY):
+                nat["tenantId"] = tenant.id
+                if in_scope(cfg, nat):
+                    nats.append(nat)
             health.extend(azure.graph(tenant, HEALTH_QUERY))
             annotations.extend(azure.graph(tenant, ANNOTATION_QUERY.format(minutes=lookback)))
         except CollectorError as exc:
@@ -910,6 +1064,7 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
     if unreadable == len(tenants):
         raise CollectorError(f"NO_COVERAGE: {'; '.join(report.blind)}"[:900])
     report.vms = len(vms)
+    report.nats = len(nats)
     check_health(cfg, now, vms, health, report)
     if cfg.summary_only:
         report.findings = []
@@ -925,11 +1080,13 @@ def collect(cfg: Config, now: datetime, report: Report) -> None:
                 "newIn24h": sum(1 for r in report.unhealthy if r.get("ageHours", 99) < 24),
                 "notAvailableGroups": unhealthy_groups(report.unhealthy),
                 "loopShadow": loop_shadow(report.unhealthy, now),
+                "natGateways": report.nats,
                 "readableTenants": report.readable,
             },
         })
         return
     check_annotations(cfg, now, vms, annotations, report)
+    check_nats(azure, cfg, now, tenants, nats, report)
     check_disks(azure, cfg, now, tenants, vms, report)
     merge_disk_burst(cfg, now, report)
 
@@ -947,6 +1104,17 @@ def run(cfg: Config) -> tuple[int, str]:
     return (1 if report.findings else 0), render(now, cfg, report, time.monotonic() - started)
 
 
+def nat_shadow_text(report: Report) -> str:
+    if not report.nat_shadow:
+        return "nat: 0"
+    parts = [
+        f"{rule.removeprefix('nat-')} {len(values)} "
+        f"(worst {round(min(values) if rule == 'nat-datapath' else max(values), 1)})"
+        for rule, values in sorted(report.nat_shadow.items())
+    ]
+    return "nat: " + ", ".join(parts)
+
+
 def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
     summary = (
         f"azure-ops watch {iso(now)}: {len(report.findings)} finding(s); "
@@ -954,6 +1122,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{len(report.blind)} blind; {report.vms} VM(s), {report.running} running, "
         f"{len(report.unhealthy)} not Available, {report.series} disk series, "
         f"{report.saturated} saturated without latency, "
+        f"{report.nats} NAT gateway(s) ({nat_shadow_text(report)}), "
         f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
         f"{report.calls} call(s) in {elapsed:.0f}s"
     )
@@ -1003,6 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--deadline-seconds", type=float, default=100.0)
     parser.add_argument("--disk-burst", type=int, default=20)
+    parser.add_argument("--nat-alerts", action="store_true")
     args = parser.parse_args(argv)
     if not 0 < args.sustain_minutes <= args.window_minutes:
         parser.error("--sustain-minutes must be between 1 and --window-minutes")
@@ -1027,6 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         deadline_seconds=args.deadline_seconds,
         disk_burst=args.disk_burst,
+        nat_alerts=args.nat_alerts,
     )
     code, text = run(cfg)
     print(text)
