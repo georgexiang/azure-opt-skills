@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -57,6 +58,9 @@ echo "token-$tenant"
 
 def iso(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+HISTORY_LOCK = threading.Lock()
 
 
 class FakeArm(BaseHTTPRequestHandler):
@@ -111,6 +115,32 @@ class FakeArm(BaseHTTPRequestHandler):
             value.append({"name": {"value": name}, "timeseries": series})
         return value
 
+    def history(self, path: str) -> None:
+        with HISTORY_LOCK:
+            self.world["historyActive"] = self.world.get("historyActive", 0) + 1
+            self.world["historyPeak"] = max(self.world.get("historyPeak", 0), self.world["historyActive"])
+            throttle = self.world.get("historyThrottle", 0) > 0
+            if throttle:
+                self.world["historyThrottle"] -= 1
+        try:
+            time.sleep(self.world.get("historyDelay", 0))
+            if throttle:
+                data = json.dumps({"error": {"code": "TooManyRequests", "message": "throttled"}}).encode()
+                self.send_response(429)
+                self.send_header("Retry-After", "0")
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            vid = path.split("/providers/Microsoft.ResourceHealth")[0].lower()
+            if vid not in self.world.get("history", {}):
+                return self.reply(404, {"error": {"message": "not found"}})
+            return self.reply(200, {"value": self.world["history"][vid]})
+        finally:
+            with HISTORY_LOCK:
+                self.world["historyActive"] -= 1
+
     def do_GET(self) -> None:
         self.calls.append(("GET", self.path, self.token_tenant()))
         url = urllib.parse.urlsplit(self.path)
@@ -127,10 +157,7 @@ class FakeArm(BaseHTTPRequestHandler):
                          "tenantId": tenant, "state": "Disabled"})
             return self.reply(200, {"value": rows})
         if "/providers/Microsoft.ResourceHealth/availabilityStatuses" in url.path:
-            vid = url.path.split("/providers/Microsoft.ResourceHealth")[0].lower()
-            if vid not in self.world.get("history", {}):
-                return self.reply(404, {"error": {"message": "not found"}})
-            return self.reply(200, {"value": self.world["history"][vid]})
+            return self.history(url.path)
         resource = url.path.split("/providers/Microsoft.Insights/metrics")[0].lower()
         if self.tenant_of(resource.split("/")[2]) != self.token_tenant():
             return self.reply(401, {"error": {"message": "wrong tenant token"}})
@@ -1022,6 +1049,45 @@ class WatchTests(unittest.TestCase):
         assert body is not None
         self.assertEqual(body["findings"][0]["observed"]["network"],
                          {"loadBalancer": 3, "loadBalancerBasic": 1, "loadBalancerAks": 1})
+
+    def degraded_fleet(self, count: int) -> list[str]:
+        ids = [vm_id(SUB, f"vm-{i:03}") for i in range(count)]
+        self.world["vms"] = [vm(i) for i in ids]
+        refreshed = self.now - timedelta(minutes=50)
+        self.world["health"] = [health(i, "Degraded", refreshed, previous="Degraded") for i in ids]
+        self.world["history"] = {i: [record("Degraded", self.now - timedelta(days=9))] for i in ids}
+        return ids
+
+    def test_throttled_history_lookups_are_retried_and_still_dated(self) -> None:
+        self.degraded_fleet(3)
+        self.world["historyThrottle"] = 4
+        code, body, summary, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        shadow = body["findings"][0]["observed"]["loopShadow"]
+        self.assertEqual([(b["bucket"], b["count"]) for b in shadow["byAge"]], [("Degraded >7d", 3)])
+        self.assertNotIn("gaps", body)
+        self.assertIn("4 throttled retry(ies)", summary)
+
+    def test_persistent_throttling_becomes_a_gap_not_a_failure(self) -> None:
+        self.degraded_fleet(2)
+        self.world["historyThrottle"] = 1000
+        code, body, summary, _ = self.watch("--summary-only")
+        self.assertEqual(code, 1)
+        assert body is not None
+        self.assertEqual(self.rules(body), [("daily-summary", None)])
+        shadow = body["findings"][0]["observed"]["loopShadow"]
+        self.assertEqual([(b["bucket"], b["count"]) for b in shadow["byAge"]], [("Degraded unknown", 2)])
+        self.assertIn("HTTP_429", body["gaps"]["first"][0])
+        self.assertIn("6 throttled retry(ies)", summary)
+
+    def test_history_lookups_run_at_most_four_at_a_time(self) -> None:
+        self.degraded_fleet(12)
+        self.world["historyDelay"] = 0.2
+        code, _, _, _ = self.watch("--summary-only", "--workers", "24")
+        self.assertEqual(code, 1)
+        self.assertGreaterEqual(self.world["historyPeak"], 2)
+        self.assertLessEqual(self.world["historyPeak"], 4)
 
     def test_rejects_scope_that_could_alter_the_query(self) -> None:
         code, _, _, result = self.watch("--scope", f"/subscriptions/{SUB}/resourceGroups/x') or true //")

@@ -46,6 +46,10 @@ ARG_SUBSCRIPTION_CHUNK = 100
 BATCH_RESOURCE_CHUNK = 50
 OUTPUT_BUDGET = 7000
 HTTP_TIMEOUT = 30.0
+THROTTLE_STATUSES = {429, 529}
+THROTTLE_RETRIES = 3
+THROTTLE_MAX_WAIT = 20.0
+HEALTH_HISTORY_WORKERS = 4
 UNHEALTHY = {"Degraded": "warning", "Unavailable": "critical"}
 STOPPED = {"PowerState/deallocated", "PowerState/deallocating", "PowerState/stopped"}
 HEALTH_HISTORY_API = "2022-10-01"
@@ -216,6 +220,7 @@ class Report:
     tenant_names: dict[str, str] = field(default_factory=dict)
     readable: list[str] = field(default_factory=list)
     calls: int = 0
+    throttled: int = 0
 
 
 def parse_time(text: str) -> datetime | None:
@@ -313,11 +318,37 @@ class Http:
         self.lock = threading.Lock()
 
     def call(self, method: str, url: str, token: str, body: Any = None) -> Any:
+        data = None if body is None else json.dumps(body).encode()
+        attempt = 0
+        while True:
+            try:
+                return self.send(method, url, token, data)
+            except urllib.error.HTTPError as exc:
+                wait = self.throttle_wait(exc, attempt)
+                if wait is None:
+                    raise self.failure(url, exc) from exc
+                with self.lock:
+                    self.report.throttled += 1
+                time.sleep(wait)
+                attempt += 1
+
+    def throttle_wait(self, exc: urllib.error.HTTPError, attempt: int) -> float | None:
+        if exc.code not in THROTTLE_STATUSES or attempt >= THROTTLE_RETRIES:
+            return None
+        header = (exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+        wait = float(header) if header.isdigit() else float(2 ** attempt)
+        wait = min(wait, THROTTLE_MAX_WAIT)
+        if time.monotonic() + wait > self.deadline:
+            return None
+        exc.read()
+        return wait
+
+    def send(self, method: str, url: str, token: str, data: bytes | None) -> Any:
         with self.lock:
             self.report.calls += 1
         request = urllib.request.Request(
             url,
-            data=None if body is None else json.dumps(body).encode(),
+            data=data,
             method=method,
             headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
         )
@@ -326,23 +357,26 @@ class Http:
             timeout = max(3.0, min(HTTP_TIMEOUT, remaining))
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read() or b"null")
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode(errors="replace")
-            try:
-                error = json.loads(raw).get("error") or {}
-                parts = [str(error.get("message", ""))] + [
-                    f"{d.get('code')}: {d.get('message')}"
-                    + (f" near '{d['token']}'" if d.get("token") else "")
-                    for d in error.get("details") or []
-                ]
-                message = "; ".join(p for p in parts if p) or raw
-            except (ValueError, AttributeError):
-                message = raw
-            code = "AUTH_REQUIRED" if exc.code == 401 else f"HTTP_{exc.code}"
-            path = urllib.parse.urlsplit(url).path
-            raise CollectorError(f"{code}: {path}: {message[:600]}") from exc
+        except urllib.error.HTTPError:
+            raise
         except (urllib.error.URLError, TimeoutError) as exc:
             raise CollectorError(f"UNREACHABLE: {exc}") from exc
+
+    def failure(self, url: str, exc: urllib.error.HTTPError) -> CollectorError:
+        raw = exc.read().decode(errors="replace")
+        try:
+            error = json.loads(raw).get("error") or {}
+            parts = [str(error.get("message", ""))] + [
+                f"{d.get('code')}: {d.get('message')}"
+                + (f" near '{d['token']}'" if d.get("token") else "")
+                for d in error.get("details") or []
+            ]
+            message = "; ".join(p for p in parts if p) or raw
+        except (ValueError, AttributeError):
+            message = raw
+        code = "AUTH_REQUIRED" if exc.code == 401 else f"HTTP_{exc.code}"
+        path = urllib.parse.urlsplit(url).path
+        return CollectorError(f"{code}: {path}: {message[:600]}")
 
 
 @dataclass
@@ -667,7 +701,7 @@ def add_unhealthy_since(
             row["since"] = iso(since)
             row["ageHours"] = round((now - since).total_seconds() / 3600, 1)
 
-    with ThreadPoolExecutor(max_workers=azure.cfg.workers) as pool:
+    with ThreadPoolExecutor(max_workers=min(azure.cfg.workers, HEALTH_HISTORY_WORKERS)) as pool:
         list(pool.map(lookup, report.unhealthy[:300]))
 
 
@@ -1620,7 +1654,7 @@ def run(cfg: Config) -> tuple[int, str]:
     try:
         collect(cfg, now, report)
     except CollectorError as exc:
-        failed = Report(calls=report.calls, blind=report.blind)
+        failed = Report(calls=report.calls, throttled=report.throttled, blind=report.blind)
         failed.findings.append(collector_error(exc))
         return 1, render(now, cfg, failed, time.monotonic() - started)
     return (1 if report.findings else 0), render(now, cfg, report, time.monotonic() - started)
@@ -1651,7 +1685,7 @@ def render(now: datetime, cfg: Config, report: Report, elapsed: float) -> str:
         f"{report.network['applicationGateway']} app gateway(s) ({shadow_text(report, 'agw')}), "
         f"{report.network['loadBalancer']} load balancer(s) ({shadow_text(report, 'lb')}), "
         f"{len(report.gaps)} gap(s), {report.skipped} disk batch(es) skipped at deadline; "
-        f"{report.calls} call(s) in {elapsed:.0f}s"
+        f"{report.calls} call(s), {report.throttled} throttled retry(ies) in {elapsed:.0f}s"
     )
     if not report.findings:
         return summary

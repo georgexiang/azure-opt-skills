@@ -66,6 +66,8 @@
 
 cron 脚本受平台 120 秒执行超时限制。脚本在 `--deadline-seconds`（默认 100）后不再查询剩余的磁盘批次，先输出已有结果，摘要行给出 `disk batch(es) skipped at deadline`。这是本轮磁盘覆盖不全，不是故障，不要为此重跑脚本。
 
+Azure 返回 429（ARM、Resource Graph、Resource Health 限流）或 529（指标后端限流）时，脚本按 `Retry-After` 等待后重试，最多 3 次，单次最多等 20 秒，且不超过截止时间；仍失败的请求计入 `gaps`（`HTTP_429`），不使整轮失败。摘要行的 `throttled retry(ies)` 是本轮重试次数。Resource Health 历史查询（每日汇总给每台非 Available VM 定开始时间）最多 4 路并发。
+
 阈值通过 cron 命令中的参数调整，不要修改脚本。VM 数以千计时，轻微的延迟上升每轮都会出现，可以追加 `--latency-ms 50`，只对明显的延迟和"跑满且变慢"唤醒；如果仍然几乎每轮唤醒，用 `--latency-ms 200 --latency-ratio 10`，只留下延迟严重、且远高于自身基线的盘。
 
 ## 启用巡检（每个 Project 一次）
