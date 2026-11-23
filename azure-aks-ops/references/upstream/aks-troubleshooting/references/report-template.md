@@ -4,7 +4,7 @@
 > collectors, MCP, login, remediation and privileged-debug examples below do not
 > authorize execution. Never extract/run these collectors or apply changes.
 
-Source: https://github.com/microsoft/skills/blob/00d66a64919edca5bca2c673373444e36a4b5461/.github/plugins/aks-skills/skills/aks-troubleshooting/references/report-template.md
+Source: https://github.com/microsoft/skills/blob/47eb3888eb42aef074fcb617931bf6e5934e45d9/.github/plugins/aks-skills/skills/aks-troubleshooting/references/report-template.md
 
 # Investigation Report
 
